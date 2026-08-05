@@ -2,9 +2,9 @@ name: CI Tests
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "master", "main" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "master", "main" ]
 
 jobs:
   test:
@@ -23,9 +23,28 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        pip install pytest pytest-cov
 
-    - name: Run test suite
+    - name: Start SENTINEL Backend Server
+      run: |
+        python server.py &
+      env:
+        PYTHONPATH: .
+
+    - name: Wait for server to become reachable
+      run: |
+        echo "Waiting for http://localhost:8090..."
+        for i in {1..30}; do
+          if curl -s http://localhost:8090/ > /dev/null; then
+            echo "Server is up!"
+            exit 0
+          fi
+          echo "Waiting..."
+          sleep 1
+        done
+        echo "Server failed to start in time"
+        exit 1
+
+    - name: Run SENTINEL Test Suite
       env:
         PYTHONPATH: .
       run: |
