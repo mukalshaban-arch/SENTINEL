@@ -1,0 +1,14 @@
+# Dependencies for `tests/unit/` — the fast, CI-run unit suite. Deliberately
+# excludes the heavy ML stack in requirements.txt (PaddleOCR, EasyOCR, spaCy,
+# InsightFace, geopandas, ...): every module under test lazy-loads those
+# inside functions, never at import time, so unit tests never need them.
+# See tests/integration/README.md for the full-stack test suite instead.
+
+pytest>=8.0
+pytest-cov>=5.0
+
+# Runtime deps actually imported at module load time by the code under test.
+psycopg2-binary>=2.9
+bcrypt>=4.0
+numpy>=1.26
+python-dateutil>=2.9

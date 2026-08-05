@@ -17,6 +17,13 @@ venv/
 uploads/
 tiles/
 
+# ── Test / coverage artifacts ────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+junit.xml
+htmlcov/
+
 # ── Claude Code local state ──────────────────────────────
 .claude/
 
