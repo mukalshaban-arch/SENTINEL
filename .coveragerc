@@ -1,0 +1,20 @@
+# Shared coverage config so the unit job and the e2e job measure the same
+# set of files and emit matching paths — required for Codecov to merge the
+# two reports into one number rather than showing them as unrelated trees.
+[run]
+source = .
+relative_files = True
+
+omit =
+    tests/*
+    venv/*
+    .venv/*
+    scripts/*
+    */site-packages/*
+    */__pycache__/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError

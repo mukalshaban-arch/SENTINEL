@@ -33,16 +33,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-test.txt
 
+      # Source/omit come from .coveragerc so this job and the e2e job measure
+      # the same files and Codecov can merge them into a single number.
       - name: Run unit tests with coverage
         env:
           SENTINEL_JWT_SECRET: ci-test-secret-key-not-for-production-0000000
         run: |
           pytest tests/unit \
-            --cov=auth --cov=nationalities --cov=geocode \
-            --cov=tiles --cov=nlp_extract --cov=face_match --cov=server \
+            --cov \
             --cov-report=term-missing \
             --cov-report=xml \
             --junitxml=junit.xml
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: unit
+          name: unit-${{ matrix.python-version }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Upload coverage report
         if: always()
@@ -120,9 +131,16 @@ jobs:
           psql -h localhost -U postgres -d sentinel -v ON_ERROR_STOP=1 -f schema.sql
           psql -h localhost -U postgres -d sentinel -v ON_ERROR_STOP=1 -f sample_data.sql
 
-      - name: Start SENTINEL server
+      # `set -m` (job control) is required, not cosmetic: a non-interactive
+      # shell sets SIGINT to SIG_IGN for background jobs, so a plain
+      # `kill -INT` is silently ignored, the process has to be SIGKILLed, and
+      # coverage never runs its atexit hook — yielding an empty report.
+      # With job control on, SIGINT reaches the process, server.py's
+      # `except KeyboardInterrupt` runs its `finally`, and coverage flushes.
+      - name: Start SENTINEL server under coverage
         run: |
-          python server.py > server-stdout.log 2>&1 &
+          set -m
+          coverage run --parallel-mode server.py > server-stdout.log 2>&1 &
           echo "SERVER_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for server to become reachable
@@ -139,6 +157,32 @@ jobs:
 
       - name: Run end-to-end integration suite
         run: python tests/integration/run_all.py
+
+      - name: Stop server and collect coverage
+        if: always()
+        run: |
+          if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+            kill -INT "$SERVER_PID"
+            # Give it a moment to unwind and write its coverage data.
+            for i in $(seq 1 15); do
+              kill -0 "$SERVER_PID" 2>/dev/null || break
+              sleep 1
+            done
+            kill -9 "$SERVER_PID" 2>/dev/null || true
+          fi
+          coverage combine
+          coverage report
+          coverage xml
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: e2e
+          name: e2e
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       # server-stdout.log captures startup/import failures; sentinel.log is
       # the app's own request/error log (logging.FileHandler in server.py).
