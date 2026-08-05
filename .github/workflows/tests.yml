@@ -26,5 +26,7 @@ jobs:
         pip install pytest pytest-cov
 
     - name: Run tests with Pytest
+      env:
+        PYTHONPATH: .
       run: |
-        pytest
+        pytest tests/

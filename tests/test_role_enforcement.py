@@ -70,3 +70,18 @@ def run(ctx):
     check("viewer cannot delete (even a nonexistent record)", code in (401, 403), f"code={code}")
 
     return results
+
+def test_role_enforcement():
+    # Construct your context dictionary here or mockup minimal context
+    ctx = {
+        "admin_tok": "mock_admin_token",
+        "analyst_tok": "mock_analyst_token",
+        "viewer_tok": "mock_viewer_token",
+        "poi_id": None
+    }
+    
+    results = run(ctx)
+    
+    # Assert that no test failed
+    failures = [res for res in results if res[0] == "FAIL"]
+    assert not failures, f"Role enforcement failures: {failures}"
