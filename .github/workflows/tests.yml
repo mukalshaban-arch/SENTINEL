@@ -41,7 +41,8 @@ jobs:
           echo "Waiting..."
           sleep 1
         done
-        echo "Server failed to start in time"
+        echo "=== SERVER FAILED TO START. LOG OUTPUT: ==="
+        cat server.log
         exit 1
 
     - name: Run SENTINEL Test Suite
