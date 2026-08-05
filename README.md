@@ -1,6 +1,7 @@
 # SENTINEL
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 [![Build Status](https://github.com/mukalshaban-arch/SENTINEL/actions/workflows/main.yml/badge.svg)](https://github.com/mukalshaban-arch/SENTINEL/actions)
 
 Brief description of what your project does.
