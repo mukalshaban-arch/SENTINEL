@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>SENTINEL — Activity Detail</title>
+  <link rel="stylesheet" href="vendor/fonts/fonts.css"/>
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css"/>
+  <link rel="stylesheet" href="sentinel.css"/>
+  <script>
+    /* Apply saved theme before first paint to avoid a flash of the wrong theme */
+    (function () {
+      var t = localStorage.getItem('snt_theme') === 'light' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <style>
+    .related-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; }
+  </style>
+</head>
+<body>
+<div class="class-banner">⚠ RESTRICTED ACCESS — AUTHORISED PERSONNEL ONLY ⚠</div>
+<div class="app-shell">
+  <div id="sidebarMount"></div>
+  <div class="main-content">
+    <div id="topbarMount"></div>
+    <div class="page-body" id="pageBody">
+      <div style="display:flex;align-items:center;justify-content:center;height:200px;gap:12px;color:var(--text-dim)">
+        <span class="spinner"></span> Loading activity record…
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Activity Modal -->
+<div class="modal-overlay hidden" id="editModal">
+  <div class="modal-box" style="max-width:620px">
+    <div class="modal-header"><h3>Edit Activity Record</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('editModal')">✕</button></div>
+    <div class="modal-body" id="editBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('editModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/maplibre/maplibre-gl.js"></script>
+<script src="sentinel.js"></script>
+<script>
+const user = requireAuth();
+const canEdit = ['ADMIN','ANALYST'].includes(user.role);
+const id = new URLSearchParams(location.search).get('id');
+if (!id) location.href = 'activities_hotspots.html';
+
+buildSidebar('activities');
+buildTopbar([{label:'Activities & Hotspots',href:'activities_hotspots.html'},{label:'Loading…'}]);
+initTopbar();
+
+let act = null, actMap = null;
+const SEV_COL = {CRITICAL:'#e84a4a',HIGH:'#e88a4a',MEDIUM:'#e8c44a',LOW:'#4ae87a'};
+
+(async()=>{
+  try {
+    act = await API.activity(id);
+    buildTopbar([
+      {label:'Activities & Hotspots', href:'activities_hotspots.html'},
+      {label:`${act.type} — ${act.location}`}
+    ]);
+    initTopbar();
+    renderPage();
+  } catch(e) {
+    document.getElementById('pageBody').innerHTML =
+      `<div style="padding:40px;text-align:center;color:var(--danger)">Error loading activity: ${escHtml(e.message)}</div>`;
+  }
+})();
+
+/* ── MAIN RENDER ──────────────────────────────────────────── */
+function renderPage() {
+  const sevLower = act.severity?.toLowerCase() || 'medium';
+  const col      = SEV_COL[act.severity] || '#4a8fe8';
+  const hasCoord = act.lat && act.lng;
+  const tags     = act.tags || [];
+  const related  = act.related || [];
+
+  document.getElementById('pageBody').innerHTML = `
+
+  <!-- Hero banner -->
+  <div class="act-detail-hero act-hero-${sevLower}" style="margin-bottom:20px">
+    <div class="flex-between" style="flex-wrap:wrap;gap:12px">
+      <div style="flex:1">
+        <div class="act-hero-type">${escHtml(act.id)} · ACTIVITY RECORD · ${formatDate(act.created_at)}</div>
+        <div class="act-hero-location">${escHtml(act.location)}</div>
+        <div class="detail-badges" style="margin-top:10px">
+          ${sevBadge(act.severity)}
+          <span class="badge badge-blue">${escHtml(act.type)}</span>
+          ${act.alias ? `<a href="person.html?id=${act.poi_id}" class="badge badge-amber" style="text-decoration:none">POI: ${escHtml(act.alias)}</a>` : ''}
+          ${act.group ? `<a href="group.html?id=${act.group.id}" class="badge badge-blue" style="text-decoration:none">Grp: ${escHtml(act.group.name)}</a>` : ''}
+        </div>
+        <!-- Tags -->
+        <div id="tagsArea" style="margin-top:10px"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;flex-shrink:0">
+        ${canEdit ? `<button class="btn btn-secondary btn-sm" onclick="openEditModal()">✎ Edit</button>` : ''}
+        <button class="btn btn-secondary btn-sm" onclick="generateReport()">🖨 Report</button>
+        <a href="activities_hotspots.html" class="btn btn-secondary btn-sm">← Back</a>
+        ${act.poi_id ? `<a href="person.html?id=${act.poi_id}" class="btn btn-secondary btn-sm">View POI →</a>` : ''}
+        ${act.group  ? `<a href="group.html?id=${act.group.id}" class="btn btn-secondary btn-sm">View Group →</a>` : ''}
+        ${canEdit ? `<button class="btn btn-danger btn-sm" onclick="deleteActivity()" style="margin-top:auto">Delete</button>` : ''}
+      </div>
+    </div>
+
+    <div class="act-hero-desc">${escHtml(act.description)}</div>
+  </div>
+
+  <!-- Key metrics strip -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:20px">
+    ${[
+      {label:'Date',          val: formatDate(act.date)},
+      {label:'Location',      val: act.location},
+      {label:'Type',          val: act.type},
+      {label:'Severity',      val: act.severity},
+      {label:'Reported By',   val: act.reported_by||'Unknown'},
+      {label:'Coordinates',   val: act.lat&&act.lng?`${act.lat.toFixed(4)}, ${act.lng.toFixed(4)}`:'Not recorded'},
+      {label:'Person of Interest', val: act.alias||(act.poi_id||'None')},
+      {label:'Group',         val: act.group?.name||'None'},
+    ].map(({label,val})=>`
+      <div class="stat-tile" style="padding:14px">
+        <div class="s-label">${label}</div>
+        <div style="font-size:13px;color:var(--text-hi);margin-top:4px;font-weight:500">${escHtml(String(val))}</div>
+      </div>`).join('')}
+  </div>
+
+  <!-- Tabs -->
+  <div id="tabContainer">
+    <div class="tabs">
+      <button class="tab-btn active" data-target="tMap">GIS Location</button>
+      <button class="tab-btn" data-target="tContext">Persons &amp; Groups</button>
+      <button class="tab-btn" data-target="tRelated">Related Activities ${related.length?`<span class="nav-badge">${related.length}</span>`:''}</button>
+      <button class="tab-btn" data-target="tNotes">Notes</button>
+      <button class="tab-btn" data-target="tData">Intel Data</button>
+      <button class="tab-btn" data-target="tMedia">Media &amp; Locations</button>
+    </div>
+
+    <!-- ══ MAP ══ -->
+    <div id="tMap" class="tab-panel active">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">GIS Location — ${escHtml(act.location)}</span>
+          ${hasCoord ? `<button class="btn btn-secondary btn-sm" onclick="actMap?.flyTo({center:[${act.lng},${act.lat}],zoom:14})">⊕ Centre</button>` : ''}
+        </div>
+        ${(!hasCoord && !(act.locations||[]).length)
+          ? `<div style="padding:48px;text-align:center;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:12px">
+               No coordinates recorded for this activity.<br/>
+               ${canEdit ? `<span style="font-size:11px">Edit the record to add a primary coordinate, or add one under Media &amp; Locations.</span>` : ''}
+             </div>`
+          : `<div style="position:relative">
+               <div id="actMap" class="detail-map" style="height:420px"></div>
+               <div class="map-legend-panel">
+                 ${hasCoord ? `
+                 <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-hi);margin-bottom:6px">THIS ACTIVITY</div>
+                 <div class="map-legend-row"><div class="map-legend-dot" style="background:${col};box-shadow:0 0 8px ${col}"></div>${escHtml(act.severity)}</div>` : ''}
+                 ${related.filter(r=>r.lat&&r.lng).length ? `
+                   <div style="color:var(--text-hi);margin:8px 0 4px;font-size:10px">RELATED</div>
+                   <div class="map-legend-row"><div class="map-legend-dot" style="background:#4a8fe8;opacity:.7"></div>Related Activity</div>` : ''}
+                 ${(act.locations||[]).length ? `
+                   <div style="color:var(--text-hi);margin:8px 0 4px;font-size:10px">OTHER</div>
+                   <div class="map-legend-row"><div class="map-legend-dot" style="background:#c44ae8"></div>Additional location</div>` : ''}
+               </div>
+               <div class="map-stat-overlay">
+                 ${hasCoord ? `<div class="map-stat-chip">${act.lat.toFixed(5)}, ${act.lng.toFixed(5)}</div>` : ''}
+                 ${(act.locations||[]).length ? `<div class="map-stat-chip">${act.locations.length} additional location(s)</div>` : ''}
+               </div>
+             </div>
+             <div id="mapInfoAct" style="padding:12px;border-top:1px solid var(--border)">
+               <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">
+                 ${hasCoord ? 'Activity location pinned. ' : ''}${related.filter(r=>r.lat&&r.lng).length} related activities also shown.
+               </span>
+             </div>`}
+      </div>
+    </div>
+
+    <!-- ══ CONTEXT ══ -->
+    <div id="tContext" class="tab-panel">
+      <div class="grid-2" style="gap:16px">
+
+        <!-- POI -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">Person of Interest</span></div>
+          ${act.poi_id
+            ? `<a href="person.html?id=${act.poi_id}" class="connection-card" style="display:flex">
+                <div class="connection-avatar">${iUsers}</div>
+                <div class="connection-body">
+                  <div class="connection-alias">${escHtml(act.poi_id)} · ${escHtml(act.risk_level||'')}</div>
+                  <div class="connection-name">${escHtml(act.alias||act.poi_id)}</div>
+                  <div class="connection-meta">${escHtml(act.first_name||'')} ${escHtml(act.last_name||'')}
+                    ${act.risk_level ? riskBadge(act.risk_level) : ''}</div>
+                </div>
+                <span style="color:var(--accent2);align-self:center">→</span>
+              </a>`
+            : '<div style="color:var(--text-dim);font-size:12px">No person linked to this activity.</div>'}
+        </div>
+
+        <!-- Group -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">Associated Group</span></div>
+          ${act.group
+            ? `<a href="group.html?id=${act.group.id}" class="connection-card" style="display:flex">
+                <div class="connection-avatar" style="background:rgba(74,143,232,.1)">${iGroup}</div>
+                <div class="connection-body">
+                  <div class="connection-alias">${escHtml(act.group.id)} · ${escHtml(act.group.type||'')}</div>
+                  <div class="connection-name">${escHtml(act.group.name)}</div>
+                  <div class="connection-meta">${threatBadge(act.group.threat_level)}</div>
+                </div>
+                <span style="color:var(--accent2);align-self:center">→</span>
+              </a>`
+            : '<div style="color:var(--text-dim);font-size:12px">No group linked to this activity.</div>'}
+        </div>
+
+      </div>
+
+      <!-- Full context box -->
+      <div class="card mt-16">
+        <div class="card-header"><span class="card-title">Activity Context</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+          <div>
+            <div class="section-label">Full Description</div>
+            <div style="font-size:13px;color:var(--text);line-height:1.75;white-space:pre-wrap">${escHtml(act.description)}</div>
+          </div>
+          <div>
+            <div class="section-label">Record Information</div>
+            <table class="data-table">
+              ${[['Activity ID',act.id],['Type',act.type],['Date',formatDate(act.date)],
+                 ['Location',act.location],['Severity',act.severity],['Reported By',act.reported_by||'Unknown'],
+                 ['Record Created',formatDate(act.created_at)],['Last Updated',formatDate(act.updated_at)],
+                ].map(([l,v])=>`<tr><td class="text-dim mono" style="width:45%;font-size:10px">${l}</td>
+                  <td style="font-size:12px">${escHtml(String(v||'—'))}</td></tr>`).join('')}
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ RELATED ══ -->
+    <div id="tRelated" class="tab-panel">
+      ${related.length > 1 ? `
+      <div class="card mb-16">
+        <div class="card-header"><span class="card-title">Filter Related Activities by Date</span></div>
+        <div id="relatedDateSliderArea"></div>
+      </div>` : ''}
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Related Activities (<span id="relatedCount">${related.length}</span>)</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">
+            Same POI or group
+          </span>
+        </div>
+        <div id="relatedGridWrap">
+        ${related.length
+          ? `<div class="related-grid">
+              ${related.map(r => `
+                <a href="activity.html?id=${r.id}" class="related-act-card rel-${(r.severity||'medium').toLowerCase()}">
+                  <div class="related-act-type">${escHtml(r.type)}</div>
+                  <div class="related-act-loc">${escHtml(r.location)}</div>
+                  <div class="related-act-date">${formatDate(r.date)} · ${sevBadge(r.severity)}</div>
+                </a>`).join('')}
+             </div>`
+          : '<div style="color:var(--text-dim);font-size:12px;padding:12px 0">No related activities found for this POI or group.</div>'}
+        </div>
+      </div>
+
+      <!-- Related on map -->
+      ${related.filter(r=>r.lat&&r.lng).length ? `
+        <div class="card mt-16">
+          <div class="card-header"><span class="card-title">Related Activities — Map View</span></div>
+          <div id="relatedMap" class="detail-map" style="height:320px"></div>
+        </div>` : ''}
+    </div>
+
+    <!-- ══ MEDIA & LOCATIONS ══ -->
+    <div id="tMedia" class="tab-panel">
+      <div class="card mb-16">
+        <div class="card-header"><span class="card-title">Photographic Evidence</span></div>
+        <div id="actImagesPanel"></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Additional Coordinates</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">e.g. movement path, secondary sighting</span>
+        </div>
+        <div id="locationsPanel"></div>
+      </div>
+    </div>
+
+    <!-- ══ NOTES ══ -->
+    <div id="tNotes" class="tab-panel">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Activity Notes</span></div>
+        <div id="notesPanel"></div>
+      </div>
+    </div>
+
+    <!-- ══ INTEL DATA ══ -->
+    <div id="tData" class="tab-panel">
+      <div class="grid-2" style="gap:16px">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Intelligence Fields</span></div>
+          <div id="fieldsPanel"></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Attachments &amp; Evidence</span></div>
+          <div id="attachPanel"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>`;
+
+  initTabs('tabContainer');
+  SUI.tags('tagsArea','activity',id,canEdit);
+  SUI.notes('notesPanel','activity',id,canEdit);
+  SUI.fields('fieldsPanel','activity',id,canEdit);
+  SUI.attachments('attachPanel','activity',id,canEdit);
+  SUI.images('actImagesPanel','activity',id,canEdit);
+  SUI.locations('locationsPanel','activity',id,canEdit);
+  initRelatedDateSlider();
+
+  // Init main map after DOM is ready
+  if (hasCoord || (act.locations||[]).length) setTimeout(initActMap, 100);
+
+  // Related map on tab click
+  document.querySelectorAll('[data-target="tRelated"]').forEach(b =>
+    b.addEventListener('click', () => setTimeout(initRelatedMap, 150)));
+}
+
+/* ── RELATED ACTIVITIES DATE SLIDER ──────────────────────── */
+function initRelatedDateSlider() {
+  const area = document.getElementById('relatedDateSliderArea');
+  if (!area) return;
+  const related = act.related || [];
+  SUI.dateSlider(area, related, {
+    onChange: (from, to, filtered) => {
+      const grid = document.getElementById('relatedGridWrap');
+      if (grid) {
+        grid.innerHTML = filtered.length
+          ? `<div class="related-grid">${filtered.map(r => `
+              <a href="activity.html?id=${r.id}" class="related-act-card rel-${(r.severity||'medium').toLowerCase()}">
+                <div class="related-act-type">${escHtml(r.type)}</div>
+                <div class="related-act-loc">${escHtml(r.location)}</div>
+                <div class="related-act-date">${formatDate(r.date)} · ${sevBadge(r.severity)}</div>
+              </a>`).join('')}</div>`
+          : '<div style="color:var(--text-dim);font-size:12px;padding:12px 0">No related activities in this date range.</div>';
+      }
+      const countEl = document.getElementById('relatedCount');
+      if (countEl) countEl.textContent = filtered.length;
+    }
+  });
+}
+
+/* ── MAIN MAP ─────────────────────────────────────────────── */
+function initActMap() {
+  const el = document.getElementById('actMap');
+  if (!el || actMap) return;
+
+  const hasCoord = act.lat && act.lng;
+  const extraLocs = act.locations || [];
+  const center = hasCoord ? [act.lat, act.lng] : [extraLocs[0].lat, extraLocs[0].lng];
+  actMap = MAP.create('actMap', {center, zoom:11, scrollZoom:false});
+  actMap.on('load', () => {
+    const col = SEV_COL[act.severity] || '#4a8fe8';
+
+    if (hasCoord) {
+      // Main activity marker — large, with a glow ring
+      const html = `<div style="width:24px;height:24px;border-radius:50%;background:${col};
+                 border:3px solid #fff;box-shadow:0 0 0 3px ${col}55,0 0 20px ${col}88"></div>`;
+      const main = MAP.htmlMarker(actMap, act.lat, act.lng, html);
+
+      const mainPopup = `
+        <div class="lp-title">${escHtml(act.type)}</div>
+        <div class="lp-row"><span class="lp-label">Location</span><span class="lp-val">${escHtml(act.location)}</span></div>
+        <div class="lp-row"><span class="lp-label">Date</span><span class="lp-val">${formatDate(act.date)}</span></div>
+        <div class="lp-row"><span class="lp-label">POI</span><span class="lp-val">${act.alias ? `<a href="person.html?id=${act.poi_id}" class="lp-link">${escHtml(act.alias)}</a>` : 'Unknown'}</span></div>
+        <div class="lp-row"><span class="lp-label">Coords</span><span class="lp-val">${act.lat.toFixed(5)}, ${act.lng.toFixed(5)}</span></div>
+        <span class="lp-sev lp-sev-${act.severity.toLowerCase()}">${act.severity}</span>
+        <div style="font-size:11px;color:var(--text);margin-top:6px;border-top:1px solid var(--border);padding-top:6px">
+          ${escHtml(act.description.slice(0,140))}${act.description.length>140?'…':''}
+        </div>`;
+      const popup = new maplibregl.Popup({offset:16, maxWidth:'290px'}).setHTML(mainPopup);
+      main.setPopup(popup);
+      popup.addTo(actMap);
+    }
+
+    // Related activity markers (dimmer)
+    (act.related||[]).filter(r=>r.lat&&r.lng).forEach(r => {
+      const rc = SEV_COL[r.severity]||'#4a8fe8';
+      const rm = MAP.circleMarker(actMap, r.lat, r.lng, {radius:7, color:rc, weight:1.5});
+      MAP.bindHoverPopup(rm, `
+        <div class="lp-title">${escHtml(r.type)}</div>
+        <div class="lp-row"><span class="lp-label">Location</span><span class="lp-val">${escHtml(r.location)}</span></div>
+        <div class="lp-row"><span class="lp-label">Date</span><span class="lp-val">${formatDate(r.date)}</span></div>
+        <span class="lp-sev lp-sev-${(r.severity||'').toLowerCase()}">${r.severity}</span>
+        <a href="activity.html?id=${r.id}" class="lp-link hs-popup-link">Open activity →</a>`, {maxWidth:'240px'});
+    });
+
+    // Additional coordinates recorded on this activity (e.g. movement path)
+    extraLocs.forEach(l => {
+      const html=`<div style="width:16px;height:16px;background:#c44ae8;border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px #c44ae8aa"></div>`;
+      const m = MAP.htmlMarker(actMap, l.lat, l.lng, html);
+      MAP.bindHoverPopup(m, `
+        <div class="lp-title">📍 ${escHtml(l.label||'Additional location')}</div>
+        <div class="lp-row"><span class="lp-label">Coords</span><span class="lp-val">${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}</span></div>
+        ${l.note?`<div style="font-size:11px;color:var(--text);margin-top:6px;border-top:1px solid var(--border);padding-top:6px">${escHtml(l.note)}</div>`:''}`,
+        {maxWidth:'260px'});
+    });
+
+    const allPts = [...(hasCoord?[[act.lat,act.lng]]:[]), ...extraLocs.map(l=>[l.lat,l.lng])];
+    if (allPts.length > 1) MAP.fitToPoints(actMap, allPts, 40);
+  });
+}
+
+/* ── RELATED MAP ──────────────────────────────────────────── */
+let relMapObj = null;
+function initRelatedMap() {
+  const el = document.getElementById('relatedMap');
+  if (!el || relMapObj) return;
+  const pts = (act.related||[]).filter(r=>r.lat&&r.lng);
+  if (!pts.length) return;
+
+  const center = act.lat && act.lng ? [act.lat,act.lng] : [pts[0].lat,pts[0].lng];
+  relMapObj = MAP.create('relatedMap', {center, zoom:5, scrollZoom:false});
+  relMapObj.on('load', () => {
+    if (act.lat&&act.lng) {
+      const col=SEV_COL[act.severity]||'#4a8fe8';
+      const m=MAP.circleMarker(relMapObj, act.lat, act.lng, {radius:10, color:col, weight:2});
+      const popup=new maplibregl.Popup({offset:14}).setHTML(`<b>THIS ACTIVITY</b><br>${escHtml(act.location)}<br>${formatDate(act.date)}`);
+      m.setPopup(popup); popup.addTo(relMapObj);
+    }
+    pts.forEach(r=>{
+      const rc=SEV_COL[r.severity]||'#4a8fe8';
+      const m=MAP.circleMarker(relMapObj, r.lat, r.lng, {radius:7, color:rc, weight:1.5});
+      MAP.bindHoverPopup(m, `<a href="activity.html?id=${r.id}" class="lp-link"><b>${escHtml(r.type)}</b></a><br>${escHtml(r.location)}<br>${formatDate(r.date)}`);
+    });
+    const allPts = [...(act.lat&&act.lng?[[act.lat,act.lng]]:[]),...pts.map(r=>[r.lat,r.lng])];
+    if(allPts.length>1) MAP.fitToPoints(relMapObj, allPts, 20);
+  });
+}
+
+/* ── EDIT ─────────────────────────────────────────────────── */
+function openEditModal(){
+  document.getElementById('editBody').innerHTML = `
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Type</label>
+        <select class="form-select" id="eType">${['MEETING','MOVEMENT','COMMUNICATION','FINANCIAL','SURVEILLANCE','OTHER'].map(t=>`<option ${t===act.type?'selected':''}>${t}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">Date *</label>
+        <input type="date" class="form-input" id="eDate" value="${act.date||''}"/></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Location *</label>
+        <input class="form-input" id="eLoc" value="${escHtml(act.location||'')}"/></div>
+      <div class="form-group"><label class="form-label">Severity</label>
+        <select class="form-select" id="eSev">${['LOW','MEDIUM','HIGH','CRITICAL'].map(s=>`<option ${s===act.severity?'selected':''}>${s}</option>`).join('')}</select></div>
+    </div>
+    <div class="form-group"><label class="form-label">Coordinates <span style="color:var(--text-dim);font-weight:400">(optional — exact lat/lng, if known)</span></label>
+      <div class="form-row">
+        <input type="number" step="any" class="form-input" id="eLat" placeholder="Latitude" value="${act.lat||''}"/>
+        <input type="number" step="any" class="form-input" id="eLng" placeholder="Longitude" value="${act.lng||''}"/>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="SUI.pickCoords('eLat','eLng')" style="flex-shrink:0">📍 Pick on Map</button>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">Description *</label>
+      <textarea class="form-textarea" id="eDesc">${escHtml(act.description||'')}</textarea></div>
+    <div class="form-group"><label class="form-label">Reported By</label>
+      <input class="form-input" id="eBy" value="${escHtml(act.reported_by||'')}"/></div>`;
+  openModal('editModal');
+}
+
+async function saveEdit(){
+  const loc  = document.getElementById('eLoc').value.trim();
+  const desc = document.getElementById('eDesc').value.trim();
+  if(!loc||!desc){showToast('Location and description required','error');return;}
+  try{
+    await API.updateActivity(id,{
+      type:document.getElementById('eType').value,
+      date:document.getElementById('eDate').value,
+      location:loc,
+      severity:document.getElementById('eSev').value,
+      lat:document.getElementById('eLat').value===''?null:parseFloat(document.getElementById('eLat').value),
+      lng:document.getElementById('eLng').value===''?null:parseFloat(document.getElementById('eLng').value),
+      description:desc,
+      reportedBy:document.getElementById('eBy').value.trim()
+    });
+    closeModal('editModal'); showToast('Activity updated','success');
+    act = await API.activity(id);
+    actMap?.remove(); actMap=null; relMapObj?.remove(); relMapObj=null;
+    renderPage();
+  }catch(e){showToast(e.message,'error');}
+}
+
+async function deleteActivity(){
+  if(!confirm('Permanently delete this activity record?')) return;
+  try{
+    await API.deleteActivity(id);
+    showToast('Deleted','success');
+    setTimeout(()=>{location.href='activities_hotspots.html';},600);
+  }catch(e){showToast(e.message,'error');}
+}
+
+/* ── REPORT ───────────────────────────────────────────────── */
+async function generateReport(){
+  const profileImages = act.images || [];
+  const extraLocs = act.locations || [];
+  const mapPoints = [
+    ...(act.lat&&act.lng?[{lat:act.lat,lng:act.lng}]:[]),
+    ...extraLocs.map(l=>({lat:l.lat,lng:l.lng})),
+    ...((act.related||[]).filter(r=>r.lat&&r.lng).map(r=>({lat:r.lat,lng:r.lng})))
+  ];
+  const mapHtml = await staticMapHtml(mapPoints, {caption: act.lat&&act.lng?`Primary location: ${act.lat.toFixed(5)}, ${act.lng.toFixed(5)}${mapPoints.length>1?` · ${mapPoints.length-1} additional/related location(s) also shown.`:''}`:(extraLocs.length?`${extraLocs.length} additional location(s) shown.`:'No coordinates recorded for this activity.')});
+  printReport(`Activity — ${act.type} @ ${act.location}`,`
+    <div class="rpt-header">
+      ${reportPhotoHtml(act.poi_id?null:null, act.alias?`POI: ${act.alias}`:'NO POI LINKED')}
+      <div style="flex:1">
+        <div class="rpt-class">RESTRICTED</div>
+        <h1>SENTINEL — Activity Report</h1>
+        <p>Generated: ${new Date().toLocaleString()} · Analyst: ${user.name}</p>
+        <h2 style="border:none;margin:10px 0 0;padding:0">${escHtml(act.type)} — ${escHtml(act.location)}</h2>
+        <div style="margin-top:6px">
+          <span class="badge ${act.severity==='CRITICAL'||act.severity==='HIGH'?'badge-red':act.severity==='MEDIUM'?'badge-amber':'badge-green'}">${escHtml(act.severity||'')}</span>
+          ${act.alias?`<span class="badge badge-blue">POI: ${escHtml(act.alias)}</span>`:''}
+          ${act.group?`<span class="badge badge-blue">${escHtml(act.group.name)}</span>`:''}
+        </div>
+      </div>
+    </div>
+    <table>${[['Activity ID',act.id],['Type',act.type],['Date',formatDate(act.date)],
+      ['Location',act.location],['Severity',act.severity],
+      ['Person of Interest',act.alias||(act.poi_id||'None')],
+      ['Associated Group',act.group?.name||'None'],
+      ['Coordinates',act.lat&&act.lng?`${act.lat.toFixed(5)}, ${act.lng.toFixed(5)}`:'Not recorded'],
+      ['Reported By',act.reported_by||'Unknown'],['Record Created',formatDate(act.created_at)]
+    ].map(([l,v])=>`<tr><td>${l}</td><td>${escHtml(String(v||'—'))}</td></tr>`).join('')}</table>
+    <h2>Description</h2><p>${escHtml(act.description||'')}</p>
+    <h2>Photographic Evidence</h2>
+    ${reportGalleryHtml(profileImages.map(a=>({src:a.content,caption:a.description||a.name})), {emptyText:'No photographic evidence attached to this activity.'})}
+    <h2>GIS — Location${extraLocs.length?'s':''}</h2>
+    ${mapHtml}
+    ${extraLocs.length?`<table><tr><th>Label</th><th>Coordinates</th><th>Note</th></tr>
+      ${extraLocs.map(l=>`<tr><td>${escHtml(l.label||'—')}</td><td>${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}</td><td>${escHtml(l.note||'')}</td></tr>`).join('')}</table>`:''}
+    ${act.related?.length?`<h2>Related Activities (${act.related.length})</h2>
+      <table><tr><th>ID</th><th>Type</th><th>Location</th><th>Date</th><th>Severity</th></tr>
+      ${act.related.map(r=>`<tr><td>${r.id}</td><td>${r.type}</td><td>${escHtml(r.location)}</td><td>${formatDate(r.date)}</td><td>${r.severity}</td></tr>`).join('')}</table>`:''}
+  `);
+}
+</script>
+</body>
+</html>

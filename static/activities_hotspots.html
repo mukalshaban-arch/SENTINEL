@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>SENTINEL — Activities & Hotspots</title>
+  <link rel="stylesheet" href="vendor/fonts/fonts.css"/>
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css"/>
+  <link rel="stylesheet" href="sentinel.css"/>
+  <script>
+    /* Apply saved theme before first paint to avoid a flash of the wrong theme */
+    (function () {
+      var t = localStorage.getItem('snt_theme') === 'light' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <style>
+    #map { height:520px; width:100%; }
+    .map-legend { position:absolute; bottom:20px; right:20px; background:rgba(17,20,24,.92); border:1px solid var(--border); padding:12px 14px; z-index:1000; font-family:'JetBrains Mono',monospace; font-size:10px; }
+    .legend-item { display:flex; align-items:center; gap:8px; margin-bottom:4px; color:var(--text-dim); }
+    .legend-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+    .map-wrap { position:relative; border:1px solid var(--border); }
+    .map-controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
+    .act-type-filter { display:flex; gap:6px; flex-wrap:wrap; }
+    .type-chip { font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.08em; padding:4px 10px; border:1px solid var(--border); cursor:pointer; transition:all .15s; background:transparent; color:var(--text-dim); }
+    .type-chip.active { border-color:var(--accent); color:var(--accent); background:rgba(232,196,74,.1); }
+    .act-card { background:var(--panel); border:1px solid var(--border); padding:14px; margin-bottom:10px; display:flex; gap:12px; }
+    .act-card:hover { border-color:var(--accent2); }
+    .act-body { flex:1; min-width:0; }
+    .act-header { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:4px; }
+    .act-desc { font-size:12px; color:var(--text-dim); line-height:1.5; margin-top:4px; }
+    .act-meta { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--text-dim); margin-top:6px; }
+  </style>
+</head>
+<body>
+<div class="class-banner">⚠ RESTRICTED ACCESS — AUTHORISED PERSONNEL ONLY ⚠</div>
+<div class="app-shell">
+  <div id="sidebarMount"></div>
+  <div class="main-content">
+    <div id="topbarMount"></div>
+    <div class="page-body">
+
+      <div class="page-heading flex-between">
+        <div><h2>Activities &amp; Hotspots</h2><div class="sub" id="actCount">Loading…</div></div>
+        <div class="flex flex-gap-8" id="hdrBtns"></div>
+      </div>
+
+      <!-- Tabs -->
+      <div id="tabContainer">
+        <div class="tabs">
+          <button class="tab-btn active" data-target="tabMap">GIS Map</button>
+          <button class="tab-btn" data-target="tabActivities">Activity Log</button>
+          <button class="tab-btn" data-target="tabHotspots">Hotspots</button>
+        </div>
+
+        <!-- ══ MAP ══ -->
+        <div id="tabMap" class="tab-panel active">
+          <div class="map-controls">
+            <select class="form-select" id="mapLayer" style="width:180px" onchange="refreshMap()">
+              <option value="all">Show All</option>
+              <option value="activities">Activities Only</option>
+              <option value="hotspots">Hotspots Only</option>
+            </select>
+            <select class="form-select" id="mapSeverity" style="width:160px" onchange="refreshMap()">
+              <option value="">All Severities</option>
+              <option value="CRITICAL">Critical</option>
+              <option value="HIGH">High</option>
+              <option value="MEDIUM">Medium</option>
+              <option value="LOW">Low</option>
+            </select>
+            <select class="form-select" id="mapType" style="width:160px" onchange="refreshMap()">
+              <option value="">All Types</option>
+              <option>MEETING</option><option>MOVEMENT</option><option>COMMUNICATION</option>
+              <option>FINANCIAL</option><option>SURVEILLANCE</option><option>OTHER</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="fitMap()">⊕ Fit All</button>
+          </div>
+          <div class="map-wrap">
+            <div id="map"></div>
+            <div class="map-legend">
+              <div style="color:var(--text-hi);margin-bottom:6px;font-size:11px">SEVERITY</div>
+              <div class="legend-item"><div class="legend-dot" style="background:#e84a4a;box-shadow:0 0 6px #e84a4a"></div>Critical</div>
+              <div class="legend-item"><div class="legend-dot" style="background:#e88a4a"></div>High</div>
+              <div class="legend-item"><div class="legend-dot" style="background:#e8c44a"></div>Medium</div>
+              <div class="legend-item"><div class="legend-dot" style="background:#4ae87a"></div>Low</div>
+              <div style="color:var(--text-hi);margin:8px 0 4px;font-size:11px">HOTSPOT</div>
+              <div class="legend-item"><div class="legend-dot" style="background:#4a8fe8;border:2px solid #fff"></div>Hotspot</div>
+            </div>
+          </div>
+          <div class="card mt-16">
+            <div class="card-header"><span class="card-title">Selected Marker Info</span></div>
+            <div id="mapInfo" style="color:var(--text-dim);font-size:12px;font-family:'JetBrains Mono',monospace">Click a marker on the map for details.</div>
+          </div>
+        </div>
+
+        <!-- ══ ACTIVITIES ══ -->
+        <div id="tabActivities" class="tab-panel">
+          <div class="flex-between mb-16" style="flex-wrap:wrap;gap:10px">
+            <div class="act-type-filter" id="typeFilters">
+              <button class="type-chip active" data-type="" onclick="setTypeFilter(this,'')">All</button>
+              <button class="type-chip" data-type="MEETING" onclick="setTypeFilter(this,'MEETING')">MEETING</button>
+              <button class="type-chip" data-type="MOVEMENT" onclick="setTypeFilter(this,'MOVEMENT')">MOVEMENT</button>
+              <button class="type-chip" data-type="COMMUNICATION" onclick="setTypeFilter(this,'COMMUNICATION')">COMMUNICATION</button>
+              <button class="type-chip" data-type="FINANCIAL" onclick="setTypeFilter(this,'FINANCIAL')">FINANCIAL</button>
+              <button class="type-chip" data-type="SURVEILLANCE" onclick="setTypeFilter(this,'SURVEILLANCE')">SURVEILLANCE</button>
+              <button class="type-chip" data-type="OTHER" onclick="setTypeFilter(this,'OTHER')">OTHER</button>
+            </div>
+            <div class="flex flex-gap-8">
+              <select class="form-select" id="actSevFilter" style="width:140px" onchange="renderActs()">
+                <option value="">All Severities</option>
+                <option value="CRITICAL">Critical</option><option value="HIGH">High</option>
+                <option value="MEDIUM">Medium</option><option value="LOW">Low</option>
+              </select>
+              <div class="search-bar" style="max-width:220px">
+                <svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px;display:inline-block;vertical-align:middle;flex-shrink:0"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.3"/><line x1="10.5" y1="10.5" x2="14" y2="14" stroke="currentColor" stroke-width="1.5"/></svg><input type="text" id="actSearch" placeholder="Search…" oninput="renderActs()"/>
+              </div>
+            </div>
+          </div>
+          <div id="actList"><div style="color:var(--text-dim);font-size:12px">Loading…</div></div>
+        </div>
+
+        <!-- ══ HOTSPOTS ══ -->
+        <div id="tabHotspots" class="tab-panel">
+          <div class="flex-between mb-16">
+            <span style="font-size:13px;color:var(--text-dim)" id="hotspotCount">Loading…</span>
+            <div class="flex flex-gap-8" id="hotspotBtns"></div>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="data-table" id="hotspotsTable">
+              <thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Risk</th><th>Lat</th><th>Lng</th><th>Note</th><th></th></tr></thead>
+              <tbody id="hotspotsBody"><tr><td colspan="8" style="text-align:center;color:var(--text-dim)">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div><!-- /tabContainer -->
+    </div>
+  </div>
+</div>
+
+<!-- Log Activity Modal -->
+<div class="modal-overlay hidden" id="actModal">
+  <div class="modal-box" style="max-width:640px">
+    <div class="modal-header">
+      <h3>Log Activity</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('actModal')"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px;display:inline-block;vertical-align:middle"><line x1="3" y1="3" x2="13" y2="13" stroke="currentColor" stroke-width="1.5"/><line x1="13" y1="3" x2="3" y2="13" stroke="currentColor" stroke-width="1.5"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Type</label>
+          <select class="form-select" id="aType">
+            <option>MEETING</option><option>MOVEMENT</option><option>COMMUNICATION</option>
+            <option>FINANCIAL</option><option>SURVEILLANCE</option><option>OTHER</option>
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Date *</label>
+          <input type="date" class="form-input" id="aDate"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Person of Interest (ID or search)</label>
+          <input class="form-input" id="aPoiId" placeholder="e.g. P001"/>
+        </div>
+        <div class="form-group"><label class="form-label">Group (optional)</label>
+          <input class="form-input" id="aGroupId" placeholder="e.g. G001"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Location Name *</label>
+          <input class="form-input" id="aLoc" placeholder="City, Country"/>
+        </div>
+        <div class="form-group"><label class="form-label">Severity</label>
+          <select class="form-select" id="aSev">
+            <option>LOW</option><option>MEDIUM</option><option selected>HIGH</option><option>CRITICAL</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Coordinates <span style="color:var(--text-dim);font-weight:400">(optional — exact lat/lng, if known)</span></label>
+        <div class="form-row">
+          <input type="number" step="any" class="form-input" id="aLat" placeholder="Latitude"/>
+          <input type="number" step="any" class="form-input" id="aLng" placeholder="Longitude"/>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="SUI.pickCoords('aLat','aLng')" style="flex-shrink:0">📍 Pick on Map</button>
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Description *</label>
+        <textarea class="form-textarea" id="aDesc" placeholder="What was observed…"></textarea>
+      </div>
+      <div class="form-group"><label class="form-label">Reported By</label>
+        <input class="form-input" id="aBy" placeholder="Analyst ID, field unit, SIGINT, etc."/>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('actModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveActivity()">Log Activity</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Hotspot Modal -->
+<div class="modal-overlay hidden" id="hotspotModal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>Add Hotspot</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('hotspotModal')"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px;display:inline-block;vertical-align:middle"><line x1="3" y1="3" x2="13" y2="13" stroke="currentColor" stroke-width="1.5"/><line x1="13" y1="3" x2="3" y2="13" stroke="currentColor" stroke-width="1.5"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group"><label class="form-label">Name *</label><input class="form-input" id="hName" placeholder="Location name"/></div>
+      <div class="form-group"><label class="form-label">Coordinates *</label>
+        <div class="form-row">
+          <input type="number" step="any" class="form-input" id="hLat" placeholder="Latitude"/>
+          <input type="number" step="any" class="form-input" id="hLng" placeholder="Longitude"/>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="SUI.pickCoords('hLat','hLng')" style="flex-shrink:0">📍 Pick on Map</button>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Type</label>
+          <select class="form-select" id="hType">
+            <option>MEETING_POINT</option><option>LOGISTICS</option><option>FINANCIAL</option>
+            <option>COMMAND</option><option>SURVEILLANCE</option><option>GENERAL</option>
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Risk Level</label>
+          <select class="form-select" id="hRisk">
+            <option>LOW</option><option selected>MEDIUM</option><option>HIGH</option><option>CRITICAL</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Note</label><textarea class="form-textarea" id="hNote" style="min-height:60px"></textarea></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('hotspotModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveHotspot()">Save Hotspot</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/maplibre/maplibre-gl.js"></script>
+<script src="sentinel.js"></script>
+<script>
+const user = requireAuth();
+const canEdit = ['ADMIN','ANALYST'].includes(user.role);
+buildSidebar('activities'); buildTopbar([{label:'Activities & Hotspots'}]); initTopbar();
+initTabs('tabContainer');
+
+// Header buttons
+if(canEdit) {
+  document.getElementById('hdrBtns').innerHTML =
+    `<button class="btn btn-primary" onclick="openModal('actModal');document.getElementById('aDate').value=today()">${iPlus} Log Activity</button>
+     <button class="btn btn-secondary" onclick="openModal('hotspotModal')">Add Hotspot</button>`;
+  document.getElementById('hotspotBtns').innerHTML =
+    `<button class="btn btn-primary btn-sm" onclick="openModal('hotspotModal')">${iPlus} Add Hotspot</button>`;
+}
+
+let allActs=[], allHotspots=[], activeType='', map=null, actMarkers=[], hsMarkers=[];
+
+(async()=>{
+  await Promise.all([loadActs(), loadHotspots()]);
+  initMap();
+  document.querySelectorAll('[data-target="tabMap"]').forEach(b=>b.addEventListener('click',()=>setTimeout(()=>map?.resize(),150)));
+})();
+
+async function loadActs() {
+  try {
+    allActs = await API.activities();
+    document.getElementById('actCount').textContent = `${allActs.length} activities · ${allActs.filter(a=>a.severity==='CRITICAL'||a.severity==='HIGH').length} high/critical`;
+    renderActs();
+  } catch(e){ showToast('Failed to load activities','error'); }
+}
+
+async function loadHotspots() {
+  try {
+    allHotspots = await API.hotspots();
+    renderHotspots();
+  } catch(e){}
+}
+
+let typeFilterVal='';
+function setTypeFilter(el, type) {
+  typeFilterVal=type;
+  document.querySelectorAll('.type-chip').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+  renderActs();
+}
+
+function renderActs() {
+  const sev = document.getElementById('actSevFilter').value;
+  const q   = document.getElementById('actSearch').value.toLowerCase();
+  let list  = allActs.filter(a=>{
+    if(typeFilterVal && a.type!==typeFilterVal) return false;
+    if(sev && a.severity!==sev) return false;
+    if(q && !`${a.type} ${a.location} ${a.description} ${a.alias||''}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  document.getElementById('actList').innerHTML = list.length ? list.map(a=>
+    `<div class="act-card">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex-shrink:0;width:60px">
+        ${sevBadge(a.severity)}
+        <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim);text-align:center;margin-top:4px">${escHtml(a.type)}</div>
+      </div>
+      <div class="act-body">
+        <div class="act-header">
+          <span style="font-size:13px;color:var(--text-hi);font-weight:500">${escHtml(a.location)}</span>
+          ${a.alias||a.poi_id?`<a href="person.html?id=${a.poi_id}" style="color:var(--accent2);font-size:12px">${escHtml(a.alias||a.poi_id)}</a>`:''}
+          ${a.group_id?`<a href="group.html?id=${a.group_id}" style="color:var(--accent2);font-size:12px;margin-left:4px">Grp:${escHtml(a.group_id)}</a>`:''}
+        </div>
+        <div class="act-desc">${escHtml(a.description)}</div>
+        <div class="act-meta">${formatDate(a.date)} · Reported by: ${escHtml(a.reported_by||'Unknown')} · ID: ${a.id}
+          ${a.lat&&a.lng?`· <a href="#" onclick="flyTo(${a.lat},${a.lng});document.querySelector('[data-target=tabMap]').click();return false" style="color:var(--accent2)">⊕ Show on map</a>`:''}
+          ${canEdit?`<button class="btn btn-danger btn-sm" style="margin-left:8px" onclick="deleteAct('${a.id}')">${iTrash}</button>`:''}
+        </div>
+      </div>
+    </div>`).join('')
+  : '<div style="padding:20px;color:var(--text-dim);font-size:12px">No activities match the current filters.</div>';
+}
+
+function renderHotspots() {
+  document.getElementById('hotspotCount').textContent = `${allHotspots.length} hotspot${allHotspots.length!==1?'s':''}`;
+  document.getElementById('hotspotsBody').innerHTML = allHotspots.map(h=>`
+    <tr>
+      <td class="mono text-dim">${h.id}</td>
+      <td class="text-hi">${escHtml(h.name)}</td>
+      <td><span class="badge badge-blue" style="font-size:9px">${escHtml(h.type)}</span></td>
+      <td>${riskBadge(h.risk)}</td>
+      <td class="mono">${h.lat?.toFixed(4)}</td>
+      <td class="mono">${h.lng?.toFixed(4)}</td>
+      <td class="text-dim">${escHtml(h.note)}</td>
+      <td>
+        <a href="#" onclick="flyTo(${h.lat},${h.lng});document.querySelector('[data-target=tabMap]').click();return false" class="btn btn-secondary btn-sm">${iMap}</a>
+        ${canEdit?`<button class="btn btn-danger btn-sm" onclick="deleteHotspot('${h.id}')">${iTrash}</button>`:''}
+      </td>
+    </tr>`).join('');
+}
+
+/* ── MAP ── */
+function initMap() {
+  if(map) return;
+  map = MAP.create('map', {center:[0,30], zoom:4, scrollZoom:true});
+  map.on('load', refreshMap);
+}
+
+const SEV_COL={CRITICAL:'#e84a4a',HIGH:'#e88a4a',MEDIUM:'#e8c44a',LOW:'#4ae87a'};
+
+function refreshMap() {
+  if(!map) return;
+  actMarkers.forEach(m=>m.remove()); actMarkers=[];
+  hsMarkers.forEach(m=>m.remove());  hsMarkers=[];
+  const layer=document.getElementById('mapLayer').value;
+  const sev  =document.getElementById('mapSeverity').value;
+  const type =document.getElementById('mapType').value;
+  const bounds=[];
+
+  if(layer!=='hotspots') {
+    allActs.filter(a=>a.lat&&a.lng&&(!sev||a.severity===sev)&&(!type||a.type===type)).forEach(a=>{
+      const col=SEV_COL[a.severity]||'#4a8fe8';
+      const m=MAP.circleMarker(map, a.lat, a.lng, {radius:9, color:col, weight:2});
+      const aPopupHtml = `
+        <div class="lp-title">${escHtml(a.type)}</div>
+        <div class="lp-row"><span class="lp-label">Location</span><span class="lp-val">${escHtml(a.location)}</span></div>
+        <div class="lp-row"><span class="lp-label">Date</span><span class="lp-val">${formatDate(a.date)}</span></div>
+        <div class="lp-row"><span class="lp-label">POI</span><span class="lp-val">${escHtml(a.alias||a.poi_id||'Unknown')}</span></div>
+        <div class="lp-row"><span class="lp-label">Reported</span><span class="lp-val">${escHtml(a.reported_by||'Unknown')}</span></div>
+        <span class="lp-sev lp-sev-${(a.severity||'medium').toLowerCase()}">${a.severity}</span>
+        <div style="font-size:11px;color:var(--text);margin-top:6px;border-top:1px solid var(--border);padding-top:6px;max-width:220px">
+          ${escHtml((a.description||'').slice(0,120))}${(a.description||'').length>120?'…':''}
+        </div>
+        <a href="activity.html?id=${a.id}" class="lp-link hs-popup-link" style="display:block;margin-top:6px;color:var(--accent2);font-size:11px">View full record →</a>`;
+      MAP.bindHoverPopup(m, aPopupHtml, {maxWidth:'280px', onDblClick:()=>{location.href=`activity.html?id=${a.id}`;}});
+      m.getElement().addEventListener('click',()=>showMapInfo(a));
+      actMarkers.push(m); bounds.push([a.lat,a.lng]);
+    });
+  }
+  if(layer!=='activities') {
+    allHotspots.forEach(h=>{
+      const html=`<div style="width:16px;height:16px;background:#4a8fe8;border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px #4a8fe8aa"></div>`;
+      const m=MAP.htmlMarker(map, h.lat, h.lng, html);
+      const hsPopupHtml = `
+        <div class="hs-popup-header">📍 ${escHtml(h.name)}</div>
+        <div class="hs-popup-type">${escHtml(h.type)} HOTSPOT</div>
+        <div class="lp-row"><span class="lp-label">Risk</span><span class="lp-val"><span class="lp-sev lp-sev-${(h.risk||'medium').toLowerCase()}">${h.risk}</span></span></div>
+        <div class="lp-row"><span class="lp-label">Coords</span><span class="lp-val">${h.lat.toFixed(4)}, ${h.lng.toFixed(4)}</span></div>
+        ${h.note ? `<div class="hs-popup-note">${escHtml(h.note)}</div>` : ''}
+        <div class="hs-popup-coords">${escHtml(h.id)} · Added ${formatDate(h.created_at)}</div>`;
+      MAP.bindHoverPopup(m, hsPopupHtml, {maxWidth:'260px'});
+      m.getElement().addEventListener('click',()=>showHotspotInfo(h));
+      hsMarkers.push(m); bounds.push([h.lat,h.lng]);
+    });
+  }
+  if(bounds.length>1) MAP.fitToPoints(map, bounds, 30);
+}
+
+function flyTo(lat,lng){ map?.flyTo({center:[lng,lat], zoom:10, duration:1000}); }
+function fitMap(){ refreshMap(); }
+
+function showMapInfo(a) {
+  document.getElementById('mapInfo').innerHTML=`
+    <div class="flex flex-gap-8" style="flex-wrap:wrap;margin-bottom:8px">${sevBadge(a.severity)}<span class="badge badge-grey">${escHtml(a.type)}</span></div>
+    <div style="font-size:13px;color:var(--text-hi);margin-bottom:4px">${escHtml(a.location)}</div>
+    <div style="font-size:12px;color:var(--text);margin-bottom:4px">${escHtml(a.description)}</div>
+    <div style="font-size:10px;color:var(--text-dim)">${formatDate(a.date)} · Reported by: ${escHtml(a.reported_by||'Unknown')} · Coordinates: ${a.lat?.toFixed(5)}, ${a.lng?.toFixed(5)}</div>`;
+}
+function showHotspotInfo(h) {
+  document.getElementById('mapInfo').innerHTML=`
+    <div class="flex flex-gap-8" style="flex-wrap:wrap;margin-bottom:8px"><span class="badge badge-blue">HOTSPOT</span>${riskBadge(h.risk)}<span class="badge badge-grey">${escHtml(h.type)}</span></div>
+    <div style="font-size:13px;color:var(--text-hi);margin-bottom:4px">${escHtml(h.name)}</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px">${escHtml(h.note)}</div>
+    <div style="font-size:10px;color:var(--text-dim)">Coordinates: ${h.lat?.toFixed(5)}, ${h.lng?.toFixed(5)}</div>`;
+}
+
+/* ── CRUD ── */
+async function saveActivity() {
+  const date=document.getElementById('aDate').value;
+  const loc =document.getElementById('aLoc').value.trim();
+  const desc=document.getElementById('aDesc').value.trim();
+  if(!date||!loc||!desc){ showToast('Date, location and description required','error'); return; }
+  try {
+    await API.createActivity({
+      type:document.getElementById('aType').value, date, location:loc,
+      poiId:document.getElementById('aPoiId').value.trim()||null,
+      groupId:document.getElementById('aGroupId').value.trim()||null,
+      lat:document.getElementById('aLat').value===''?null:parseFloat(document.getElementById('aLat').value),
+      lng:document.getElementById('aLng').value===''?null:parseFloat(document.getElementById('aLng').value),
+      description:desc, severity:document.getElementById('aSev').value,
+      reportedBy:document.getElementById('aBy').value.trim()
+    });
+    closeModal('actModal');
+    showToast('Activity logged','success');
+    await loadActs(); refreshMap();
+  } catch(e){ showToast(e.message,'error'); }
+}
+
+async function deleteAct(id) {
+  if(!confirm('Delete this activity record?')) return;
+  try { await API.deleteActivity(id); showToast('Deleted','success'); await loadActs(); refreshMap(); }
+  catch(e){ showToast(e.message,'error'); }
+}
+
+async function saveHotspot() {
+  const name=document.getElementById('hName').value.trim();
+  const lat =parseFloat(document.getElementById('hLat').value);
+  const lng =parseFloat(document.getElementById('hLng').value);
+  if(!name||isNaN(lat)||isNaN(lng)){ showToast('Name and coordinates required','error'); return; }
+  try {
+    await API.createHotspot({name,lat,lng,type:document.getElementById('hType').value,risk:document.getElementById('hRisk').value,note:document.getElementById('hNote').value.trim()});
+    closeModal('hotspotModal');
+    showToast('Hotspot added','success');
+    await loadHotspots(); refreshMap();
+  } catch(e){ showToast(e.message,'error'); }
+}
+
+async function deleteHotspot(id) {
+  if(!confirm('Delete this hotspot?')) return;
+  try { await API.deleteHotspot(id); showToast('Deleted','success'); await loadHotspots(); refreshMap(); }
+  catch(e){ showToast(e.message,'error'); }
+}
+
+// auto-open add modal
+if(new URLSearchParams(location.search).get('new')==='1') {
+  openModal('actModal'); document.getElementById('aDate').value=today();
+}
+</script>
+</body>
+</html>

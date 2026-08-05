@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>SENTINEL — Group Detail</title>
+  <link rel="stylesheet" href="vendor/fonts/fonts.css"/>
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css"/>
+  <link rel="stylesheet" href="sentinel.css"/>
+  <script>
+    /* Apply saved theme before first paint to avoid a flash of the wrong theme */
+    (function () {
+      var t = localStorage.getItem('snt_theme') === 'light' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+</head>
+<body>
+<div class="class-banner">⚠ RESTRICTED ACCESS — AUTHORISED PERSONNEL ONLY ⚠</div>
+<div class="app-shell">
+  <div id="sidebarMount"></div>
+  <div class="main-content">
+    <div id="topbarMount"></div>
+    <div class="page-body" id="pageBody">
+      <div style="display:flex;align-items:center;justify-content:center;height:200px;gap:12px;color:var(--text-dim)">
+        <span class="spinner"></span> Loading group record…
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div class="modal-overlay hidden" id="editModal">
+  <div class="modal-box" style="max-width:640px">
+    <div class="modal-header"><h3>Edit Group Record</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('editModal')">✕</button></div>
+    <div class="modal-body" id="editModalBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('editModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/maplibre/maplibre-gl.js"></script>
+<script src="sentinel.js"></script>
+<script>
+const user = requireAuth();
+const canEdit = ['ADMIN','ANALYST'].includes(user.role);
+const id = new URLSearchParams(location.search).get('id');
+if (!id) location.href = 'groups.html';
+
+buildSidebar('groups');
+buildTopbar([{label:'Groups of Interest',href:'groups.html'},{label:'Loading…'}]);
+initTopbar();
+
+let grp=null, activities=[], filteredActivities=[], allPersons=[], groupMapObj=null, groupMarkers=[];
+const SEV_COL={CRITICAL:'#e84a4a',HIGH:'#e88a4a',MEDIUM:'#e8c44a',LOW:'#4ae87a'};
+
+(async()=>{
+  try{
+    [grp, activities, allPersons]=await Promise.all([API.group(id), API.groupActs(id), API.persons()]);
+    filteredActivities = activities;
+    buildTopbar([{label:'Groups of Interest',href:'groups.html'},{label:grp.name}]);
+    initTopbar();
+    renderPage();
+  }catch(e){
+    document.getElementById('pageBody').innerHTML=`<div style="padding:40px;text-align:center;color:var(--danger)">Error: ${escHtml(e.message)}</div>`;
+  }
+})();
+
+function renderPage(){
+  const members   = (grp.members||[]).map(mid=>allPersons.find(p=>p.id===mid)).filter(Boolean);
+  const leader    = allPersons.find(p=>p.id===grp.leader_id);
+  const hasCoords = activities.filter(a=>a.lat&&a.lng);
+
+  document.getElementById('pageBody').innerHTML=`
+  <div class="detail-header">
+    <div class="detail-header-inner">
+      <!-- Icon / emblem area -->
+      <div class="detail-photo" style="min-height:160px;background:rgba(74,143,232,.06)">
+        <div class="detail-photo-placeholder">${iGroup}
+          <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em;text-align:center">GROUP</span>
+        </div>
+      </div>
+      <div class="detail-header-body">
+        <div class="detail-id">${escHtml(grp.id)} · GROUP OF INTEREST</div>
+        <div class="detail-title">${escHtml(grp.name)}</div>
+        <div class="detail-subtitle">${escHtml(grp.type)}</div>
+        <div class="detail-badges">
+          ${threatBadge(grp.threat_level)} ${statusBadge(grp.status)}
+          <span class="badge badge-grey">${escHtml(grp.type)}</span>
+        </div>
+        <div id="tagsArea" style="margin-top:8px"></div>
+        <div class="detail-meta-row">
+          ${[['Base of Operations',grp.base||'Unknown'],['Founded',grp.founded||'Unknown'],
+             ['Leader',leader?leader.alias:'Unknown'],['Members',members.length],
+             ['Activities',activities.length],['Record Created',formatDate(grp.created_at)]
+            ].map(([l,v])=>`<div class="detail-meta-item">
+              <div class="detail-meta-label">${l}</div>
+              <div class="detail-meta-val">${leader&&l==='Leader'?`<a href="person.html?id=${grp.leader_id}" style="color:var(--accent2)">${escHtml(String(v))}</a>`:escHtml(String(v))}</div>
+            </div>`).join('')}
+        </div>
+      </div>
+      <div class="detail-actions">
+        ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openEditModal()">✎ Edit</button>`:''}
+        <button class="btn btn-secondary btn-sm" onclick="generateReport()">🖨 Report</button>
+        <a href="groups.html" class="btn btn-secondary btn-sm">← Back</a>
+        ${canEdit?`<button class="btn btn-danger btn-sm" onclick="deleteGroup()" style="margin-top:auto">Delete</button>`:''}
+      </div>
+    </div>
+  </div>
+
+  <div id="tabContainer">
+    <div class="tabs">
+      <button class="tab-btn active" data-target="tOverview">Overview</button>
+      <button class="tab-btn" data-target="tGIS">
+        GIS Map${hasCoords.length?` <span class="nav-badge">${hasCoords.length}</span>`:''}
+      </button>
+      <button class="tab-btn" data-target="tTimeline">Timeline <span class="nav-badge">${activities.length}</span></button>
+      <button class="tab-btn" data-target="tMembers">Members <span class="nav-badge">${members.length}</span></button>
+      <button class="tab-btn" data-target="tNotes">Notes</button>
+      <button class="tab-btn" data-target="tIntel">Intelligence Data</button>
+      <button class="tab-btn" data-target="tMedia">Media &amp; Locations</button>
+    </div>
+
+    ${activities.length > 1 ? `
+    <div class="card mb-16">
+      <div class="card-header"><span class="card-title">Filter by Date Range</span></div>
+      <div id="dateSliderArea"></div>
+    </div>` : ''}
+
+    <!-- OVERVIEW -->
+    <div id="tOverview" class="tab-panel active">
+      <div class="card mb-16">
+        <div class="card-header">
+          <span class="card-title">Intelligence Assessment
+            <span class="badge badge-blue" style="font-size:9px;vertical-align:middle">AI</span></span>
+        </div>
+        <div id="summaryPanel"></div>
+      </div>
+      <div class="grid-2" style="gap:16px">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Group Details</span></div>
+          <table class="data-table">
+            ${[['ID',grp.id],['Name',grp.name],['Type',grp.type],['Threat Level',grp.threat_level],
+               ['Status',grp.status],['Founded',grp.founded||'Unknown'],['Base / Area',grp.base||'Unknown'],
+               ['Leader ID',grp.leader_id||'Unknown'],['Members',members.length],['Activities',activities.length],
+               ['Record Updated',formatDate(grp.updated_at)]
+              ].map(([l,v])=>`<tr><td class="text-dim mono" style="width:42%;font-size:11px">${l}</td>
+                <td style="font-size:12px">${escHtml(String(v||'—'))}</td></tr>`).join('')}
+          </table>
+        </div>
+        <div>
+          <div class="card mb-16">
+            <div class="card-header"><span class="card-title">Description</span></div>
+            <div style="font-size:13px;color:var(--text);line-height:1.75;white-space:pre-wrap">${escHtml(grp.description)||'<span class="text-dim">No description.</span>'}</div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">Known Objectives</span></div>
+            <div style="font-size:12px;color:var(--text-dim);line-height:1.7;font-family:'JetBrains Mono',monospace;white-space:pre-wrap">${escHtml(grp.objectives)||'Unknown'}</div>
+          </div>
+        </div>
+      </div>
+      ${activities.length?`<div class="card mt-16"><div class="card-header"><span class="card-title">Recent Activities</span>
+        <button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-target=tTimeline]').click()">All ${activities.length} →</button></div>
+        <div id="overviewTimelinePreview">${SUI.timeline(activities.slice(0,3),{showPoi:true,linkItems:true})}</div></div>`:''}
+      <!-- Member quick strip -->
+      ${members.length?`<div class="card mt-16"><div class="card-header"><span class="card-title">Members</span>
+        <button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-target=tMembers]').click()">All ${members.length} →</button></div>
+        <div class="member-grid">${members.slice(0,6).map(m=>`
+          <a href="person.html?id=${m.id}" class="member-card">
+            <div class="member-photo">${m.photo?`<img src="${m.photo}"/>`:`${iUsers}`}</div>
+            <div><div class="member-alias">${escHtml(m.id)}${m.id===grp.leader_id?' · LEADER':''}</div>
+              <div class="member-name">${escHtml(m.alias)}</div>
+              <div class="member-meta">${riskBadge(m.risk_level)}</div>
+            </div></a>`).join('')}</div></div>`:''}
+    </div>
+
+    <!-- GIS MAP -->
+    <div id="tGIS" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Activity Locations — ${escHtml(grp.name)}</span>
+          <div class="flex flex-gap-8">
+            <select class="form-select" id="gMapSevF" style="width:140px;font-size:11px" onchange="refreshGroupMap()">
+              <option value="">All Severities</option>
+              <option>CRITICAL</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option>
+            </select>
+            <select class="form-select" id="gMapTypeF" style="width:140px;font-size:11px" onchange="refreshGroupMap()">
+              <option value="">All Types</option>
+              <option>MEETING</option><option>MOVEMENT</option><option>COMMUNICATION</option>
+              <option>FINANCIAL</option><option>SURVEILLANCE</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="fitGroupMap()">⊕ Fit</button>
+          </div>
+        </div>
+        ${hasCoords.length===0 && !(grp.locations||[]).length
+          ? `<div style="padding:40px;text-align:center;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:12px">
+               No geo-tagged activities or known locations for this group.</div>`
+          : `<div style="position:relative">
+               <div id="groupMap" class="detail-map"></div>
+               <div class="map-legend-panel">
+                 <div style="color:var(--text-hi);margin-bottom:6px;font-size:10px">SEVERITY</div>
+                 ${[['CRITICAL','#e84a4a'],['HIGH','#e88a4a'],['MEDIUM','#e8c44a'],['LOW','#4ae87a']].map(([s,c])=>
+                   `<div class="map-legend-row"><div class="map-legend-dot" style="background:${c}"></div>${s}</div>`).join('')}
+                 <div style="color:var(--text-hi);margin:8px 0 4px;font-size:10px">OTHER</div>
+                 ${(grp.locations||[]).length?`<div class="map-legend-row"><div class="map-legend-dot" style="background:#c44ae8"></div>Known location</div>`:''}
+               </div>
+               <div class="map-stat-overlay">
+                 <div class="map-stat-chip" id="gMapCountChip">${hasCoords.length} locations</div>
+                 ${(grp.locations||[]).length?`<div class="map-stat-chip">${grp.locations.length} known location(s)</div>`:''}
+               </div>
+             </div>
+             <div id="gMapInfo" style="padding:12px;border-top:1px solid var(--border);min-height:50px">
+               <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">Hover a marker for info · Double-click to open activity record.</span>
+             </div>`}
+      </div>
+    </div>
+
+    <!-- TIMELINE -->
+    <div id="tTimeline" class="tab-panel">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Group Activity Timeline</span></div>
+        <div id="timelineWrap">${SUI.timeline(activities,{showPoi:true,linkItems:true})}</div>
+      </div>
+    </div>
+
+    <!-- MEMBERS -->
+    <div id="tMembers" class="tab-panel">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Known Members (${members.length})</span>
+          ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openEditModal()">Manage Members</button>`:''}
+        </div>
+        <div class="member-grid">
+          ${members.length
+            ? members.map(m=>`
+              <a href="person.html?id=${m.id}" class="member-card">
+                <div class="member-photo">${m.photo?`<img src="${m.photo}"/>`:`${iUsers}`}</div>
+                <div>
+                  <div class="member-alias">${escHtml(m.id)}${m.id===grp.leader_id?` <span style="color:var(--accent)">★ LEADER</span>`:''}</div>
+                  <div class="member-name">${escHtml(m.alias)}</div>
+                  <div class="member-meta">${escHtml(m.first_name||'')} ${escHtml(m.last_name||'')} ${riskBadge(m.risk_level)} ${statusBadge(m.status)}</div>
+                </div>
+              </a>`).join('')
+            : '<div style="color:var(--text-dim);font-size:12px">No members recorded.</div>'}
+        </div>
+      </div>
+
+      <!-- Group network graph -->
+      <div class="card mt-16">
+        <div class="card-header"><span class="card-title">Member Network</span></div>
+        <div class="graph-wrap" style="height:320px">
+          <canvas id="groupNetCanvas" style="width:100%;height:100%"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- NOTES -->
+    <div id="tNotes" class="tab-panel">
+      <div class="card"><div class="card-header"><span class="card-title">Intelligence Notes</span></div>
+        <div id="notesPanel"></div></div>
+    </div>
+
+    <!-- INTEL DATA -->
+    <div id="tIntel" class="tab-panel">
+      <div class="grid-2" style="gap:16px">
+        <div class="card"><div class="card-header"><span class="card-title">Custom Intelligence Fields</span></div>
+          <div id="fieldsPanel"></div></div>
+        <div class="card"><div class="card-header"><span class="card-title">Attachments &amp; Documents</span></div>
+          <div id="attachPanel"></div></div>
+      </div>
+    </div>
+
+    <!-- MEDIA & LOCATIONS -->
+    <div id="tMedia" class="tab-panel">
+      <div class="card mb-16">
+        <div class="card-header"><span class="card-title">Group Photographs</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">emblems, surveillance stills, evidence</span>
+        </div>
+        <div id="groupImagesPanel"></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Known Locations</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">e.g. safehouses, bases, meeting points</span>
+        </div>
+        <div id="locationsPanel"></div>
+      </div>
+    </div>
+  </div>`;
+
+  initTabs('tabContainer');
+  SUI.summary('summaryPanel','group',id,canEdit);
+  SUI.tags('tagsArea','group',id,canEdit);
+  SUI.notes('notesPanel','group',id,canEdit);
+  SUI.fields('fieldsPanel','group',id,canEdit);
+  SUI.attachments('attachPanel','group',id,canEdit);
+  SUI.images('groupImagesPanel','group',id,canEdit);
+  SUI.locations('locationsPanel','group',id,canEdit);
+  initDateSlider();
+  document.querySelectorAll('[data-target="tGIS"]').forEach(b=>b.addEventListener('click',()=>setTimeout(initGroupMap,150)));
+  document.querySelectorAll('[data-target="tMembers"]').forEach(b=>b.addEventListener('click',()=>setTimeout(drawGroupNetwork,150)));
+}
+
+/* ── DATE SLIDER ──────────────────────────────────────────── */
+function initDateSlider() {
+  const area = document.getElementById('dateSliderArea');
+  if (!area) return;
+  SUI.dateSlider(area, activities, {
+    onChange: (from, to, filtered) => {
+      const tl = document.getElementById('timelineWrap');
+      if (tl) tl.innerHTML = SUI.timeline(filtered, {showPoi:true, linkItems:true});
+      const preview = document.getElementById('overviewTimelinePreview');
+      if (preview) preview.innerHTML = SUI.timeline(filtered.slice(0,3), {showPoi:true, linkItems:true});
+      filteredActivities = filtered;
+      if (groupMapObj) renderGroupMarkers();
+      const chip = document.getElementById('gMapCountChip');
+      if (chip) chip.textContent = `${filtered.filter(a=>a.lat&&a.lng).length} locations`;
+    }
+  });
+}
+
+/* ── GROUP MAP ── */
+function initGroupMap(){
+  const el=document.getElementById('groupMap');
+  if(!el) return;
+  if(groupMapObj){groupMapObj.resize();return;}
+  const pts=activities.filter(a=>a.lat&&a.lng);
+  const knownLocs=grp.locations||[];
+  if(!pts.length && !knownLocs.length) return;
+  const center = pts.length ? [pts[0].lat,pts[0].lng] : [knownLocs[0].lat,knownLocs[0].lng];
+  groupMapObj=MAP.create('groupMap', {center, zoom:5, scrollZoom:false});
+  groupMapObj.on('load', () => {
+    renderGroupMarkers();
+    const allPts=[...pts.map(a=>[a.lat,a.lng]),...knownLocs.map(l=>[l.lat,l.lng])];
+    if(allPts.length>1) MAP.fitToPoints(groupMapObj, allPts, 30);
+  });
+}
+
+function renderGroupMarkers(){
+  groupMarkers.forEach(m=>m.remove()); groupMarkers=[];
+  const sf=document.getElementById('gMapSevF')?.value||'';
+  const tf=document.getElementById('gMapTypeF')?.value||'';
+
+  // POI colour map — each person gets a distinct accent colour
+  const memberColours={};
+  const palette=['#4a8fe8','#e8c44a','#4ae87a','#e88a4a','#c44ae8','#4ae8d8'];
+  (grp.members||[]).forEach((mid,i)=>{memberColours[mid]=palette[i%palette.length];});
+
+  filteredActivities.filter(a=>a.lat&&a.lng&&(!sf||a.severity===sf)&&(!tf||a.type===tf)).forEach(a=>{
+    const col=SEV_COL[a.severity]||'#4a8fe8';
+    const poiCol=a.poi_id&&memberColours[a.poi_id]?memberColours[a.poi_id]:col;
+    const poiName=allPersons.find(p=>p.id===a.poi_id);
+    const radius=a.severity==='CRITICAL'?11:8;
+
+    const el=document.createElement('div');
+    el.style.cssText=`width:${radius*2}px;height:${radius*2}px;border-radius:50%;background:${col};opacity:.82;border:2.5px solid ${poiCol};box-shadow:0 0 4px rgba(0,0,0,.5);cursor:pointer`;
+    const m=new maplibregl.Marker({element:el}).setLngLat([a.lng,a.lat]).addTo(groupMapObj);
+
+    const popup=`
+      <div class="lp-title">${escHtml(a.type)}</div>
+      <div class="lp-row"><span class="lp-label">Location</span><span class="lp-val">${escHtml(a.location)}</span></div>
+      <div class="lp-row"><span class="lp-label">Date</span><span class="lp-val">${formatDate(a.date)}</span></div>
+      <div class="lp-row"><span class="lp-label">POI</span><span class="lp-val">${poiName?`<a href="person.html?id=${a.poi_id}" class="lp-link">${escHtml(poiName.alias)}</a>`:'Unknown'}</span></div>
+      <div class="lp-row"><span class="lp-label">Reported</span><span class="lp-val">${escHtml(a.reported_by||'Unknown')}</span></div>
+      <div class="lp-row"><span class="lp-label">Coords</span><span class="lp-val">${a.lat.toFixed(4)}, ${a.lng.toFixed(4)}</span></div>
+      <span class="lp-sev lp-sev-${a.severity.toLowerCase()}">${a.severity}</span>
+      <div style="font-size:11px;color:var(--text);margin-top:6px;border-top:1px solid var(--border);padding-top:6px">${escHtml(a.description.slice(0,120))}${a.description.length>120?'…':''}</div>
+      <a href="activity.html?id=${a.id}" class="lp-link hs-popup-link">View full activity →</a>`;
+
+    MAP.bindHoverPopup(m, popup, {maxWidth:'290px', onDblClick:()=>{location.href=`activity.html?id=${a.id}`;}});
+    el.addEventListener('click',()=>{
+      const p=document.getElementById('gMapInfo');
+      if(p) p.innerHTML=`<div class="flex flex-gap-8" style="flex-wrap:wrap;margin-bottom:6px">${sevBadge(a.severity)}<span class="badge badge-grey">${escHtml(a.type)}</span>
+        ${poiName?`<a href="person.html?id=${a.poi_id}" class="badge badge-blue" style="text-decoration:none">${escHtml(poiName.alias)}</a>`:''}</div>
+        <div style="font-size:13px;color:var(--text-hi);margin-bottom:4px">${escHtml(a.location)}</div>
+        <div style="font-size:12px;color:var(--text);margin-bottom:4px">${escHtml(a.description)}</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">${formatDate(a.date)} · by ${escHtml(a.reported_by||'?')}
+          · <a href="activity.html?id=${a.id}" style="color:var(--accent2)">Open record →</a></div>`;
+    });
+    groupMarkers.push(m);
+  });
+
+  // Group-owned known locations (purple markers) — not date-filtered
+  (grp.locations||[]).forEach(l=>{
+    const html=`<div style="width:16px;height:16px;background:#c44ae8;border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px #c44ae8aa"></div>`;
+    const m=MAP.htmlMarker(groupMapObj, l.lat, l.lng, html);
+    const popup=`
+      <div class="lp-title">📍 ${escHtml(l.label||'Known location')}</div>
+      <div class="lp-row"><span class="lp-label">Coords</span><span class="lp-val">${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}</span></div>
+      ${l.date_observed?`<div class="lp-row"><span class="lp-label">Observed</span><span class="lp-val">${formatDate(l.date_observed)}</span></div>`:''}
+      ${l.note?`<div style="font-size:11px;color:var(--text);margin-top:6px;border-top:1px solid var(--border);padding-top:6px">${escHtml(l.note)}</div>`:''}`;
+    MAP.bindHoverPopup(m, popup, {maxWidth:'260px'});
+    groupMarkers.push(m);
+  });
+}
+function refreshGroupMap(){renderGroupMarkers();}
+function fitGroupMap(){const c=[...filteredActivities.filter(a=>a.lat&&a.lng).map(a=>[a.lat,a.lng]),...(grp.locations||[]).map(l=>[l.lat,l.lng])];if(c.length&&groupMapObj)MAP.fitToPoints(groupMapObj, c, 30);}
+
+/* ── GROUP NETWORK ── */
+function drawGroupNetwork(){
+  const canvas=document.getElementById('groupNetCanvas'); if(!canvas) return;
+  const c=canvas.parentElement;
+  canvas.width=c.clientWidth; canvas.height=c.clientHeight||320;
+  const members=(grp.members||[]).map(mid=>allPersons.find(p=>p.id===mid)).filter(Boolean);
+  SUI.networkGraph('groupNetCanvas',
+    {alias:grp.name,name:grp.name,risk_level:grp.threat_level},
+    members.map(m=>({alias:m.alias,risk_level:m.risk_level,id:m.id})));
+}
+
+/* ── EDIT ── */
+function openEditModal(){
+  document.getElementById('editModalBody').innerHTML=`
+    <div class="form-group"><label class="form-label">Group Name *</label><input class="form-input" id="eName" value="${escHtml(grp.name)}"/></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Type</label>
+        <select class="form-select" id="eType">${['Criminal Organization','Extremist Group','Terrorist Cell','Gang','Political Group','Other'].map(t=>`<option ${t===grp.type?'selected':''}>${t}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">Threat Level</label>
+        <select class="form-select" id="eThreat">${['LOW','MEDIUM','HIGH','CRITICAL'].map(t=>`<option ${t===grp.threat_level?'selected':''}>${t}</option>`).join('')}</select></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Status</label>
+        <select class="form-select" id="eStatus">${['ACTIVE','INACTIVE','DORMANT'].map(s=>`<option ${s===grp.status?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">Founded</label><input class="form-input" id="eFounded" value="${escHtml(grp.founded||'')}"/></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Base / Area</label><input class="form-input" id="eBase" value="${escHtml(grp.base||'')}"/></div>
+      <div class="form-group"><label class="form-label">Leader (POI ID)</label><input class="form-input" id="eLeader" value="${escHtml(grp.leader_id||'')}"/></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Coordinates <span style="color:var(--text-dim);font-weight:400">(optional — exact lat/lng for Base, if known)</span></label>
+      <div class="form-row">
+        <input type="number" step="any" class="form-input" id="eLat" placeholder="Latitude" value="${grp.base_lat??''}"/>
+        <input type="number" step="any" class="form-input" id="eLng" placeholder="Longitude" value="${grp.base_lng??''}"/>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="SUI.pickCoords('eLat','eLng')" style="flex-shrink:0">📍 Pick on Map</button>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">Members (POI IDs, comma-separated)</label>
+      <input class="form-input" id="eMembers" value="${(grp.members||[]).join(', ')}"/></div>
+    <div class="form-group"><label class="form-label">Description</label>
+      <textarea class="form-textarea" id="eDesc">${escHtml(grp.description||'')}</textarea></div>
+    <div class="form-group"><label class="form-label">Known Objectives</label>
+      <textarea class="form-textarea" id="eObj">${escHtml(grp.objectives||'')}</textarea></div>`;
+  openModal('editModal');
+}
+async function saveEdit(){
+  try{
+    await API.updateGroup(id,{name:document.getElementById('eName').value.trim(),
+      type:document.getElementById('eType').value,
+      threatLevel:document.getElementById('eThreat').value,
+      status:document.getElementById('eStatus').value,
+      founded:document.getElementById('eFounded').value.trim(),
+      base:document.getElementById('eBase').value.trim(),
+      baseLat:document.getElementById('eLat').value, baseLng:document.getElementById('eLng').value,
+      leaderId:document.getElementById('eLeader').value.trim(),
+      members:document.getElementById('eMembers').value.split(',').map(s=>s.trim()).filter(Boolean),
+      description:document.getElementById('eDesc').value.trim(),
+      objectives:document.getElementById('eObj').value.trim()});
+    closeModal('editModal'); showToast('Saved','success');
+    [grp,activities]=await Promise.all([API.group(id),API.groupActs(id)]);
+    filteredActivities=activities;
+    groupMapObj=null; renderPage();
+  }catch(e){showToast(e.message,'error');}
+}
+async function deleteGroup(){
+  if(!confirm(`Permanently delete group "${grp.name}"?`)) return;
+  await API.deleteGroup(id); showToast('Deleted','success');
+  setTimeout(()=>{location.href='groups.html';},600);
+}
+
+async function generateReport(){
+  const members=(grp.members||[]).map(mid=>allPersons.find(p=>p.id===mid)).filter(Boolean);
+  const leader=allPersons.find(p=>p.id===grp.leader_id);
+  const geoActs=activities.filter(a=>a.lat&&a.lng);
+  const knownLocs=grp.locations||[];
+  const groupImages=grp.images||[];
+  const allMapPts=[...geoActs.map(a=>({lat:a.lat,lng:a.lng})),...knownLocs.map(l=>({lat:l.lat,lng:l.lng}))];
+  const mapHtml = await staticMapHtml(allMapPts, {caption:`${geoActs.length} activity location(s) and ${knownLocs.length} known location(s) shown.`});
+  printReport(`Group — ${grp.name}`,`
+    <div class="rpt-header">
+      ${reportPhotoHtml(leader?.photo, leader?'LEADER · NO PHOTO':'NO LEADER ON FILE')}
+      <div style="flex:1">
+        <div class="rpt-class">RESTRICTED</div>
+        <h1>SENTINEL — Group of Interest Report</h1>
+        <p>Generated: ${new Date().toLocaleString()} · Analyst: ${user.name}</p>
+        <h2 style="border:none;margin:10px 0 0;padding:0">${escHtml(grp.name)}</h2>
+        <div style="margin-top:6px">
+          <span class="badge ${grp.threat_level==='CRITICAL'||grp.threat_level==='HIGH'?'badge-red':grp.threat_level==='MEDIUM'?'badge-amber':'badge-green'}">${escHtml(grp.threat_level||'')}</span>
+          <span class="badge ${grp.status==='ACTIVE'?'badge-green':'badge-grey'}">${escHtml(grp.status||'')}</span>
+          <span class="badge badge-grey">${escHtml(grp.type||'')}</span>
+        </div>
+      </div>
+    </div>
+    ${SUI.summaryText('group',grp.id)?`<h2>Intelligence Assessment</h2>${SUI.mdToHtml(SUI.summaryText('group',grp.id))}`:''}
+    <table>${[['ID',grp.id],['Type',grp.type],['Threat',grp.threat_level],['Status',grp.status],
+      ['Founded',grp.founded],['Base',grp.base],['Leader',leader?`${leader.alias} (${leader.id})`:(grp.leader_id||'Unknown')]
+    ].map(([l,v])=>`<tr><td>${l}</td><td>${escHtml(String(v||'—'))}</td></tr>`).join('')}</table>
+    <h2>Description</h2><p>${escHtml(grp.description||'')}</p>
+    <h2>Objectives</h2><p>${escHtml(grp.objectives||'Unknown')}</p>
+    <h2>Members (${members.length})</h2>
+    <table><tr><th>ID</th><th>Alias</th><th>Name</th><th>Risk</th></tr>
+    ${members.map(m=>`<tr><td>${m.id}</td><td>${escHtml(m.alias)}</td><td>${escHtml(m.first_name||'')} ${escHtml(m.last_name||'')}</td><td>${m.risk_level}</td></tr>`).join('')}</table>
+    <h2>Photographs</h2>
+    ${reportGalleryHtml([
+      ...groupImages.map(im=>({src:im.content,caption:im.description||im.name})),
+      ...members.filter(m=>m.photo).map(m=>({src:m.photo,caption:`${m.alias} (${m.id})`}))
+    ], {emptyText:'No photographs on file for this group or its members.'})}
+    <h2>GIS — Activity &amp; Known Locations</h2>
+    ${mapHtml}
+    ${knownLocs.length?`<table><tr><th>Label</th><th>Coordinates</th><th>Date Observed</th><th>Note</th></tr>
+      ${knownLocs.map(l=>`<tr><td>${escHtml(l.label||'—')}</td><td>${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}</td><td>${formatDate(l.date_observed)}</td><td>${escHtml(l.note||'')}</td></tr>`).join('')}</table>`:''}
+    <h2>Activity Timeline (${activities.length})</h2>
+    <table><tr><th>Date</th><th>Type</th><th>Location</th><th>Severity</th><th>Description</th></tr>
+    ${activities.sort((a,b)=>b.date.localeCompare(a.date)).map(a=>`<tr><td>${formatDate(a.date)}</td><td>${a.type}</td><td>${escHtml(a.location)}</td><td>${a.severity}</td><td>${escHtml(a.description)}</td></tr>`).join('')}</table>`);
+}
+</script>
+</body>
+</html>

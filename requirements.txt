@@ -1,0 +1,39 @@
+# SENTINEL Backend Dependencies (PostgreSQL edition, offline NLP/OCR/maps)
+# Install with: python -m pip install -r requirements.txt
+
+psycopg2-binary>=2.9
+bcrypt>=4.0
+
+# Document ingestion for the NLP module
+pdfminer.six>=20260107
+python-docx>=1.2
+
+# Offline OCR (image/scanned-PDF text extraction) — PaddleOCR primary, EasyOCR fallback
+paddleocr>=3.7
+paddlepaddle>=3.3
+easyocr>=1.7
+
+# Offline NLP entity extraction
+spacy>=3.8
+python-dateutil>=2.9
+# spaCy also needs a language model, installed separately (not a pip requirement
+# by name — see SENTINEL_SETUP_GUIDE.md for the download command):
+#   en_core_web_sm  (default; set SENTINEL_SPACY_MODEL to use a larger one)
+
+# Offline geospatial (hotspot proximity de-dup, map data handling)
+geopandas>=1.1
+shapely>=2.1
+folium>=0.20
+pandas>=3.0
+
+Pillow>=12.3
+
+# Offline face recognition (face_match.py) — InsightFace + onnxruntime (CPU).
+# Downloads the buffalo_l model pack (~280MB) automatically on first use
+# while online; fully offline after that.
+insightface>=1.0
+onnxruntime>=1.28
+
+# Optional: OpenVINO can accelerate PaddleOCR/spaCy-transformer inference on
+# Intel CPUs/iGPUs once the base pipeline above is working — not required.
+# openvino>=2026.2

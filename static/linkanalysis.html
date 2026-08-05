@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>SENTINEL — Link Analysis</title>
+  <link rel="stylesheet" href="vendor/fonts/fonts.css"/>
+  <link rel="stylesheet" href="vendor/visnetwork/vis-network.min.css"/>
+  <link rel="stylesheet" href="sentinel.css"/>
+  <script>
+    /* Apply saved theme before first paint to avoid a flash of the wrong theme */
+    (function () {
+      var t = localStorage.getItem('snt_theme') === 'light' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <style>
+    #laCanvas { height: 620px; width: 100%; background: var(--panel); border: 1px solid var(--border); }
+    .la-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+    .la-legend { display:flex; gap:16px; flex-wrap:wrap; font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--text-dim); margin-top:8px; }
+    .la-legend-item { display:flex; align-items:center; gap:6px; }
+    .la-legend-dot { width:12px; height:12px; border-radius:3px; flex-shrink:0; }
+    .la-search-results { max-height:220px; overflow-y:auto; border:1px solid var(--border); margin-top:6px; display:none; }
+    .la-search-row { padding:8px 10px; cursor:pointer; font-size:12px; border-bottom:1px solid var(--border); }
+    .la-search-row:last-child { border-bottom:none; }
+    .la-search-row:hover { background:var(--panel2); }
+    .la-empty { padding:60px 20px; text-align:center; color:var(--text-dim); font-family:'JetBrains Mono',monospace; font-size:12px; }
+  </style>
+</head>
+<body>
+<div class="class-banner">⚠ RESTRICTED ACCESS — AUTHORISED PERSONNEL ONLY ⚠</div>
+<div class="app-shell">
+  <div id="sidebarMount"></div>
+  <div class="main-content">
+    <div id="topbarMount"></div>
+    <div class="page-body">
+
+      <div class="page-heading flex-between" style="flex-wrap:wrap;gap:10px">
+        <div>
+          <h2>Link Analysis</h2>
+          <div class="sub">Chart connections between persons, groups and countries</div>
+        </div>
+        <div class="flex flex-gap-8" id="hdrBtns"></div>
+      </div>
+
+      <!-- Chart picker -->
+      <div class="la-toolbar">
+        <select class="form-select" id="chartPicker" style="width:260px" onchange="loadChart(this.value)">
+          <option value="">— Select a chart —</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="openModal('newChartModal')">+ New Chart</button>
+        <span id="chartToolbar" style="display:none" class="flex flex-gap-8">
+          <button class="btn btn-secondary btn-sm" onclick="openAddNode('person')">+ Person</button>
+          <button class="btn btn-secondary btn-sm" onclick="openAddNode('group')">+ Group</button>
+          <button class="btn btn-secondary btn-sm" onclick="openAddNode('country')">+ Country</button>
+          <button class="btn btn-secondary btn-sm" onclick="toggleLinkMode()" id="linkModeBtn">🔗 Draw Link</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteCurrentChart()">Delete Chart</button>
+        </span>
+      </div>
+
+      <div id="chartArea">
+        <div class="la-empty">Select a chart above, or create a new one to start mapping connections.</div>
+      </div>
+
+      <div class="la-legend" id="laLegend" style="display:none">
+        <div class="la-legend-item"><div class="la-legend-dot" style="background:#e8c44a"></div>Person</div>
+        <div class="la-legend-item"><div class="la-legend-dot" style="background:#4a8fe8"></div>Group</div>
+        <div class="la-legend-item"><div class="la-legend-dot" style="background:#4ae87a"></div>Country</div>
+        <div class="la-legend-item">— solid line: explicit relationship (right-click to remove)</div>
+        <div class="la-legend-item">- - - dashed line: membership/associate on file (from existing records)</div>
+        <div class="la-legend-item">Double-click a person/group node to open its record</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- New Chart Modal -->
+<div class="modal-overlay hidden" id="newChartModal">
+  <div class="modal-box">
+    <div class="modal-header"><h3>New Link Chart</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('newChartModal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label class="form-label">Chart Name *</label>
+        <input class="form-input" id="ncName" placeholder="e.g. Haraka Network — East Africa"/></div>
+      <div class="form-group"><label class="form-label">Description</label>
+        <textarea class="form-textarea" id="ncDesc" placeholder="Optional notes about this chart"></textarea></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('newChartModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createChart()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Node Modal -->
+<div class="modal-overlay hidden" id="addNodeModal">
+  <div class="modal-box">
+    <div class="modal-header"><h3 id="anTitle">Add Node</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('addNodeModal')">✕</button></div>
+    <div class="modal-body">
+      <input class="form-input" id="anSearch" placeholder="Search by name…" oninput="filterAddNodeResults()" autocomplete="off"/>
+      <div class="la-search-results" id="anResults"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('addNodeModal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Link Label Modal -->
+<div class="modal-overlay hidden" id="linkLabelModal">
+  <div class="modal-box">
+    <div class="modal-header"><h3>Describe This Link</h3>
+      <button class="btn btn-secondary btn-sm" onclick="cancelPendingLink()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label class="form-label">Relationship *</label>
+        <input class="form-input" id="linkLabelInput" placeholder="e.g. associate of, funds, operates in, suspected leader of"/></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="cancelPendingLink()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmPendingLink()">Add Link</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/visnetwork/vis-network.min.js"></script>
+<script src="sentinel.js"></script>
+<script>
+const user = requireAuth();
+const canEdit = ['ADMIN','ANALYST'].includes(user.role);
+buildSidebar('linkanalysis');
+buildTopbar([{label:'Link Analysis'}]);
+initTopbar();
+
+let allPersons = [], allGroups = [], allKnownCountries = [];
+let currentChartId = null;
+let network = null;
+let addNodeType = null;   // 'person' | 'group' | 'country'
+let linkModeOn = false;
+let pendingLink = null;   // {fromNodeKey, toNodeKey} awaiting a label
+
+const NODE_COLOR = { person: '#e8c44a', group: '#4a8fe8', country: '#4ae87a' };
+const NODE_SHAPE = { person: 'dot', group: 'diamond', country: 'box' };
+
+(async () => {
+  try {
+    [allPersons, allGroups, allKnownCountries] = await Promise.all([API.persons(), API.groups(), API.knownCountries()]);
+    await refreshChartList();
+  } catch (e) { showToast('Failed to load: ' + e.message, 'error'); }
+})();
+
+if (canEdit) {
+  document.getElementById('hdrBtns').innerHTML = '';   // toolbar below carries the actions
+}
+
+async function refreshChartList() {
+  const charts = await API.linkCharts();
+  const sel = document.getElementById('chartPicker');
+  const keep = currentChartId;
+  sel.innerHTML = '<option value="">— Select a chart —</option>' +
+    charts.map(c => `<option value="${c.id}">${escHtml(c.name)} (${c.nodeCount} nodes)</option>`).join('');
+  if (keep) sel.value = keep;
+}
+
+async function createChart() {
+  const name = document.getElementById('ncName').value.trim();
+  if (!name) return showToast('Chart name is required', 'error');
+  try {
+    const r = await API.createLinkChart({ name, description: document.getElementById('ncDesc').value.trim() });
+    closeModal('newChartModal');
+    document.getElementById('ncName').value = ''; document.getElementById('ncDesc').value = '';
+    await refreshChartList();
+    document.getElementById('chartPicker').value = r.id;
+    await loadChart(r.id);
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function deleteCurrentChart() {
+  if (!currentChartId) return;
+  if (!confirm('Delete this chart? The underlying persons, groups and relationships are not affected — only this saved layout.')) return;
+  try {
+    await API.deleteLinkChart(currentChartId);
+    currentChartId = null;
+    if (network) { network.destroy(); network = null; }
+    document.getElementById('chartToolbar').style.display = 'none';
+    document.getElementById('laLegend').style.display = 'none';
+    document.getElementById('chartArea').innerHTML = '<div class="la-empty">Select a chart above, or create a new one to start mapping connections.</div>';
+    await refreshChartList();
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+/* ── Load + render a chart ─────────────────────────────────── */
+async function loadChart(id) {
+  if (!id) {
+    currentChartId = null;
+    document.getElementById('chartToolbar').style.display = 'none';
+    document.getElementById('laLegend').style.display = 'none';
+    document.getElementById('chartArea').innerHTML = '<div class="la-empty">Select a chart above, or create a new one to start mapping connections.</div>';
+    return;
+  }
+  currentChartId = parseInt(id, 10);
+  document.getElementById('chartArea').innerHTML = '<div id="laCanvas"></div>';
+  document.getElementById('chartToolbar').style.display = canEdit ? 'flex' : 'none';
+  document.getElementById('laLegend').style.display = 'flex';
+
+  let chart;
+  try {
+    chart = await API.getLinkChart(currentChartId);
+  } catch (e) {
+    document.getElementById('chartArea').innerHTML = `<div class="la-empty" style="color:var(--danger)">Failed to load chart: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  renderNetwork(chart);
+}
+
+function nodeKeyId(type, ref) { return `${type}:${ref}`; }
+
+function renderNetwork(chart) {
+  const nodesData = chart.nodes.map(n => ({
+    id: nodeKeyId(n.node_type, n.node_ref),
+    dbId: n.id,
+    nodeType: n.node_type,
+    nodeRef: n.node_ref,
+    label: n.label + (n.risk ? `\n[${n.risk}]` : ''),
+    shape: NODE_SHAPE[n.node_type],
+    color: { background: NODE_COLOR[n.node_type], border: '#fff' },
+    font: { color: '#111', size: 12 },
+    x: n.x, y: n.y,
+    fixed: false,
+  }));
+  const edgesData = chart.edges.map(e => ({
+    id: e.id,
+    from: nodeKeyId(e.from[0], e.from[1]),
+    to: nodeKeyId(e.to[0], e.to[1]),
+    label: e.label,
+    dashes: e.kind !== 'relationship',
+    relationshipId: e.relationship_id,
+    kind: e.kind,
+    font: { size: 9, color: 'var(--text-dim)', strokeWidth: 0 },
+    color: { color: e.kind === 'relationship' ? '#e88a4a' : '#6b7a90' },
+    arrows: '',
+  }));
+
+  const nodes = new vis.DataSet(nodesData);
+  const edges = new vis.DataSet(edgesData);
+  const container = document.getElementById('laCanvas');
+
+  network = new vis.Network(container, { nodes, edges }, {
+    physics: { stabilization: true, barnesHut: { gravitationalConstant: -4000, springLength: 140 } },
+    interaction: { hover: true, multiselect: false },
+    manipulation: { enabled: false },
+    edges: { smooth: { type: 'continuous' } },
+  });
+
+  network.on('dragEnd', async (params) => {
+    if (!canEdit) return;
+    for (const nid of params.nodes) {
+      const pos = network.getPositions([nid])[nid];
+      const n = nodes.get(nid);
+      try { await API.updateLinkNode(currentChartId, n.dbId, { x: pos.x, y: pos.y }); } catch (e) { /* non-fatal */ }
+    }
+  });
+
+  network.on('doubleClick', (params) => {
+    if (!params.nodes.length) return;
+    const n = nodes.get(params.nodes[0]);
+    if (n.nodeType === 'person') location.href = `person.html?id=${n.nodeRef}`;
+    else if (n.nodeType === 'group') location.href = `group.html?id=${n.nodeRef}`;
+    else if (n.nodeType === 'country') location.href = `countries.html?name=${encodeURIComponent(n.nodeRef)}`;
+  });
+
+  network.on('oncontext', async (params) => {
+    params.event.preventDefault();
+    if (!canEdit) return;
+    const edgeId = network.getEdgeAt(params.pointer.DOM);
+    if (edgeId) {
+      const e = edges.get(edgeId);
+      if (e.kind !== 'relationship') return showToast('This link is derived from existing records — edit it from the person/group record instead.', 'error');
+      if (!confirm(`Remove link "${e.label}"?`)) return;
+      try { await API.deleteRel(e.relationshipId); edges.remove(edgeId); } catch (err) { showToast(err.message, 'error'); }
+      return;
+    }
+    const nodeId = network.getNodeAt(params.pointer.DOM);
+    if (nodeId) {
+      const n = nodes.get(nodeId);
+      if (!confirm(`Remove "${n.nodeType}" node from this chart? (The underlying record is not deleted.)`)) return;
+      try { await API.deleteLinkNode(currentChartId, n.dbId); nodes.remove(nodeId); } catch (err) { showToast(err.message, 'error'); }
+    }
+  });
+
+  network._sntNodesDS = nodes; network._sntEdgesDS = edges;
+}
+
+/* ── Draw-link interaction (click two nodes in sequence) ────── */
+function toggleLinkMode() {
+  linkModeOn = !linkModeOn;
+  const btn = document.getElementById('linkModeBtn');
+  btn.classList.toggle('btn-primary', linkModeOn);
+  btn.classList.toggle('btn-secondary', !linkModeOn);
+  btn.textContent = linkModeOn ? '🔗 Click two nodes…' : '🔗 Draw Link';
+  pendingLink = null;
+  if (!network) return;
+  network.off('click', onLinkModeClick);
+  if (linkModeOn) network.on('click', onLinkModeClick);
+}
+
+function onLinkModeClick(params) {
+  if (!params.nodes.length) return;
+  const nodes = network._sntNodesDS;
+  const clicked = nodes.get(params.nodes[0]);
+  if (!pendingLink) {
+    pendingLink = { from: clicked };
+    showToast(`Selected "${clicked.nodeRef}" — click the node to link it to`, 'success');
+    return;
+  }
+  if (clicked.id === pendingLink.from.id) { pendingLink = null; return; }
+  pendingLink.to = clicked;
+  document.getElementById('linkLabelInput').value = '';
+  openModal('linkLabelModal');
+}
+
+async function confirmPendingLink() {
+  const label = document.getElementById('linkLabelInput').value.trim();
+  if (!label || !pendingLink) return showToast('A relationship description is required', 'error');
+  const { from, to } = pendingLink;
+  // Anchor the relationship at whichever side is a real entity (person/group);
+  // a country can only ever be the "related" side (see server.py).
+  const [anchor, target] = (from.nodeType === 'country') ? [to, from] : [from, to];
+  const anchorType = anchor.nodeType === 'person' ? 'person' : 'group';
+  try {
+    const body = { relatedType: target.nodeType, relType: label };
+    if (target.nodeType === 'country') body.relatedName = target.nodeRef;
+    else body.relatedId = target.nodeRef;
+    await API.addRel(anchorType, anchor.nodeRef, body);
+    closeModal('linkLabelModal');
+    pendingLink = null;
+    toggleLinkMode();
+    await loadChart(currentChartId);
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+function cancelPendingLink() {
+  pendingLink = null;
+  closeModal('linkLabelModal');
+}
+
+/* ── Add node modal ──────────────────────────────────────────── */
+function openAddNode(type) {
+  addNodeType = type;
+  document.getElementById('anTitle').textContent =
+    type === 'person' ? 'Add Person' : type === 'group' ? 'Add Group' : 'Add Country';
+  document.getElementById('anSearch').value = '';
+  document.getElementById('anResults').style.display = 'none';
+  document.getElementById('anResults').innerHTML = '';
+  openModal('addNodeModal');
+  setTimeout(() => document.getElementById('anSearch').focus(), 50);
+}
+
+function filterAddNodeResults() {
+  const q = document.getElementById('anSearch').value.trim().toLowerCase();
+  const out = document.getElementById('anResults');
+  if (!q) { out.style.display = 'none'; out.innerHTML = ''; return; }
+
+  let items = [];
+  if (addNodeType === 'person') {
+    items = allPersons.filter(p => p.alias.toLowerCase().includes(q))
+      .slice(0, 20).map(p => ({ ref: String(p.id), label: `${p.alias} (#${p.id})` }));
+  } else if (addNodeType === 'group') {
+    items = allGroups.filter(g => g.name.toLowerCase().includes(q))
+      .slice(0, 20).map(g => ({ ref: String(g.id), label: `${g.name} (#${g.id})` }));
+  } else {
+    items = allKnownCountries
+      .filter(c => c.toLowerCase().includes(q)).slice(0, 20)
+      .map(c => ({ ref: c, label: c }));
+  }
+  out.style.display = items.length ? 'block' : 'none';
+  out.innerHTML = items.map(it => `<div class="la-search-row" onclick="pickAddNode('${it.ref.replace(/'/g,"\\'")}')">${escHtml(it.label)}</div>`).join('')
+    || '<div class="la-search-row" style="color:var(--text-dim)">No matches.</div>';
+}
+
+async function pickAddNode(ref) {
+  if (!currentChartId) return;
+  try {
+    await API.addLinkNode(currentChartId, { nodeType: addNodeType, nodeRef: ref, x: 100 + Math.random()*400, y: 100 + Math.random()*300 });
+    closeModal('addNodeModal');
+    await loadChart(currentChartId);
+    await refreshChartList();
+  } catch (e) { showToast(e.message, 'error'); }
+}
+</script>
+</body>
+</html>

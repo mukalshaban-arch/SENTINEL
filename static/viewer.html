@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>SENTINEL — Read-Only Viewer</title>
+  <link rel="stylesheet" href="vendor/fonts/fonts.css"/>
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css"/>
+  <link rel="stylesheet" href="sentinel.css"/>
+  <script>
+    /* Apply saved theme before first paint to avoid a flash of the wrong theme */
+    (function () {
+      var t = localStorage.getItem('snt_theme') === 'light' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <style>
+    .result-card{background:var(--panel);border:1px solid var(--border);padding:14px 16px;margin-bottom:10px;display:flex;gap:14px;align-items:flex-start;text-decoration:none;color:inherit;transition:border-color .15s}
+    .result-card:hover{border-color:var(--accent2);background:var(--panel2)}
+    .result-icon{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px}
+    .result-body{flex:1;min-width:0}
+    .result-title{font-size:14px;color:var(--text-hi);font-weight:500;margin-bottom:3px}
+    .result-meta{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:5px}
+    .result-desc{font-size:12px;color:var(--text-dim);line-height:1.5}
+    .filter-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;align-items:center}
+    .big-search{width:100%;background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:18px;padding:14px 18px;outline:none;font-family:'Inter',sans-serif;transition:border-color .15s}
+    .big-search:focus{border-color:var(--accent2)}
+    .big-search::placeholder{color:var(--muted)}
+    .scope-btn{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.08em;padding:7px 14px;border:1px solid var(--border);background:transparent;color:var(--text-dim);cursor:pointer;transition:all .15s}
+    .scope-btn.active{border-color:var(--accent);color:var(--accent);background:rgba(232,196,74,.08)}
+    .scope-btn:hover:not(.active){border-color:var(--accent2);color:var(--accent2)}
+    .detail-overlay{display:none;position:fixed;inset:0;z-index:400;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);padding:20px;overflow-y:auto}
+    .detail-overlay.open{display:flex;align-items:flex-start;justify-content:center}
+    .detail-box{background:var(--panel);border:1px solid var(--border);width:100%;max-width:780px;max-height:90vh;overflow-y:auto}
+    .stat-strip{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-bottom:20px}
+    .stat-box{background:var(--panel);border:1px solid var(--border);padding:14px;text-align:center}
+    .stat-box .n{font-family:'Bebas Neue',sans-serif;font-size:36px;color:var(--accent);line-height:1}
+    .stat-box .l{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim);letter-spacing:.12em;text-transform:uppercase;margin-top:2px}
+    .tag-strip{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  </style>
+</head>
+<body>
+<div class="class-banner">⚠ RESTRICTED ACCESS — READ-ONLY VIEW ⚠</div>
+<div class="app-shell">
+  <div id="sidebarMount"></div>
+  <div class="main-content">
+    <div id="topbarMount"></div>
+    <div class="page-body">
+
+      <div class="page-heading flex-between">
+        <div>
+          <h2>Intelligence Browser</h2>
+          <div class="sub">Search and browse all records — read-only access</div>
+        </div>
+        <span class="badge badge-blue">VIEWER</span>
+      </div>
+
+      <!-- Stats strip -->
+      <div class="stat-strip" id="statStrip">
+        ${['','','',''].map(()=>'<div class="stat-box"><div class="n" style="color:var(--muted)">—</div><div class="l">loading</div></div>').join('')}
+      </div>
+
+      <!-- Search bar -->
+      <div style="margin-bottom:14px">
+        <input type="text" class="big-search" id="mainSearch"
+          placeholder="Search persons, groups, activities, locations…"
+          autocomplete="off"/>
+      </div>
+
+      <!-- Scope filters -->
+      <div class="filter-bar">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);letter-spacing:.1em">SEARCH IN:</div>
+        <button class="scope-btn active" data-scope="all">All Records</button>
+        <button class="scope-btn" data-scope="persons">Persons</button>
+        <button class="scope-btn" data-scope="groups">Groups</button>
+        <button class="scope-btn" data-scope="activities">Activities</button>
+        <button class="scope-btn" data-scope="intel">Intel Reports</button>
+        <div style="margin-left:auto;display:flex;gap:8px">
+          <select class="form-select" id="riskFilter" style="width:150px;font-size:11px">
+            <option value="">All Risk Levels</option>
+            <option>CRITICAL</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option>
+          </select>
+          <select class="form-select" id="statusFilter" style="width:130px;font-size:11px">
+            <option value="">Any Status</option>
+            <option>ACTIVE</option><option>INACTIVE</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div id="results">
+        <div style="color:var(--text-dim);font-size:12px;padding:20px 0;text-align:center;font-family:'JetBrains Mono',monospace">
+          Type to search, or browse by category below.
+        </div>
+      </div>
+
+      <!-- Browse all when empty -->
+      <div id="browseAll">
+        <div id="tabContainer">
+          <div class="tabs">
+            <button class="tab-btn active" data-target="bPersons">Persons of Interest</button>
+            <button class="tab-btn" data-target="bGroups">Groups</button>
+            <button class="tab-btn" data-target="bActivities">Recent Activities</button>
+            <button class="tab-btn" data-target="bIntel">Intel Reports</button>
+          </div>
+          <div id="bPersons" class="tab-panel active"><div id="bPersonsList" style="color:var(--text-dim);font-size:12px">Loading…</div></div>
+          <div id="bGroups"  class="tab-panel"><div id="bGroupsList"  style="color:var(--text-dim);font-size:12px">Loading…</div></div>
+          <div id="bActivities" class="tab-panel"><div id="bActsList"  style="color:var(--text-dim);font-size:12px">Loading…</div></div>
+          <div id="bIntel"  class="tab-panel"><div id="bIntelList"  style="color:var(--text-dim);font-size:12px">Loading…</div></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Detail overlay -->
+<div class="detail-overlay" id="detailOverlay">
+  <div class="detail-box">
+    <div class="modal-header" style="position:sticky;top:0;background:var(--panel);z-index:10">
+      <h3 id="detailTitle">Detail</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeDetail()">✕ Close</button>
+    </div>
+    <div class="modal-body" id="detailBody" style="padding:20px"></div>
+  </div>
+</div>
+
+<script src="vendor/maplibre/maplibre-gl.js"></script>
+<script src="sentinel.js"></script>
+<script>
+const user = requireAuth();
+buildSidebar('activities');
+buildTopbar([{label:'Intelligence Browser'}]);
+initTopbar();
+initTabs('tabContainer');
+
+// Viewer is read-only regardless of role
+const canEdit = false;
+
+let allPersons=[], allGroups=[], allActivities=[], allIntel=[], allHotspots=[];
+let currentScope='all', searchTimer=null, detailMap=null;
+const RISK_ORDER = {CRITICAL:0,HIGH:1,MEDIUM:2,LOW:3,INACTIVE:4};
+
+/* ── Load all data ──────────────────────────────────────── */
+(async()=>{
+  try {
+    [allPersons, allGroups, allActivities, allIntel, allHotspots] = await Promise.all([
+      API.persons(), API.groups(), API.activities(), API.intelList(), API.hotspots()
+    ]);
+    loadStats();
+    renderBrowsePersons();
+    renderBrowseGroups();
+    renderBrowseActivities();
+    renderBrowseIntel();
+  } catch(e){ showToast('Failed to load data: '+e.message,'error'); }
+})();
+
+/* ── Stats ─────────────────────────────────────────────── */
+function loadStats(){
+  const critical = allPersons.filter(p=>p.risk_level==='CRITICAL').length;
+  const highRisk = allPersons.filter(p=>['CRITICAL','HIGH'].includes(p.risk_level)).length;
+  document.getElementById('statStrip').innerHTML=[
+    {n:allPersons.length,l:'Persons'},
+    {n:allGroups.length,l:'Groups'},
+    {n:allActivities.length,l:'Activities'},
+    {n:critical,l:'Critical Risk'},
+    {n:highRisk,l:'High+Critical'},
+    {n:allHotspots.length,l:'Hotspots'},
+  ].map(s=>`<div class="stat-box"><div class="n">${s.n}</div><div class="l">${s.l}</div></div>`).join('');
+}
+
+/* ── Scope buttons ──────────────────────────────────────── */
+document.querySelectorAll('.scope-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.scope-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    currentScope = btn.dataset.scope;
+    doSearch();
+  });
+});
+
+document.getElementById('riskFilter').addEventListener('change', doSearch);
+document.getElementById('statusFilter').addEventListener('change', doSearch);
+
+/* ── Search ─────────────────────────────────────────────── */
+document.getElementById('mainSearch').addEventListener('input', e=>{
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if(!q){ showBrowse(true); return; }
+  showBrowse(false);
+  searchTimer = setTimeout(()=>doSearch(), 280);
+});
+
+function showBrowse(show){
+  document.getElementById('browseAll').style.display = show?'block':'none';
+  if(show) document.getElementById('results').innerHTML='';
+}
+
+async function doSearch(){
+  const q       = document.getElementById('mainSearch').value.trim();
+  const riskF   = document.getElementById('riskFilter').value;
+  const statF   = document.getElementById('statusFilter').value;
+  const scope   = currentScope;
+
+  if(!q){ showBrowse(true); return; }
+  showBrowse(false);
+
+  document.getElementById('results').innerHTML=
+    '<div style="color:var(--text-dim);font-size:12px;padding:20px;text-align:center"><span class="spinner"></span> Searching…</div>';
+
+  try {
+    // Client-side search across all data
+    const results = [];
+    const ql = q.toLowerCase();
+
+    if(scope==='all'||scope==='persons'){
+      allPersons.filter(p=>{
+        const match = `${p.alias} ${p.first_name||''} ${p.last_name||''} ${p.nationality||''} ${p.last_location||''} ${p.description||''}`.toLowerCase().includes(ql);
+        const riskOk = !riskF || p.risk_level===riskF;
+        const statOk = !statF || p.status===statF;
+        return match && riskOk && statOk;
+      }).forEach(p=>results.push({type:'person',data:p,score:p.alias.toLowerCase()===ql?10:p.alias.toLowerCase().includes(ql)?5:1}));
+    }
+
+    if(scope==='all'||scope==='groups'){
+      allGroups.filter(g=>{
+        const match=`${g.name} ${g.type||''} ${g.base||''} ${g.description||''}`.toLowerCase().includes(ql);
+        const riskOk=!riskF||g.threat_level===riskF;
+        const statOk=!statF||g.status===statF;
+        return match&&riskOk&&statOk;
+      }).forEach(g=>results.push({type:'group',data:g,score:g.name.toLowerCase()===ql?10:5}));
+    }
+
+    if(scope==='all'||scope==='activities'){
+      allActivities.filter(a=>{
+        const match=`${a.type} ${a.location||''} ${a.description||''} ${a.alias||''}`.toLowerCase().includes(ql);
+        const sevOk=!riskF||a.severity===riskF;
+        return match&&sevOk;
+      }).forEach(a=>results.push({type:'activity',data:a,score:1}));
+    }
+
+    if(scope==='all'||scope==='intel'){
+      allIntel.filter(i=>{
+        return `${i.title} ${i.locations||''} ${i.poi_refs||''}`.toLowerCase().includes(ql);
+      }).forEach(i=>results.push({type:'intel',data:i,score:2}));
+    }
+
+    // Sort by score desc
+    results.sort((a,b)=>b.score-a.score);
+
+    renderResults(results, q);
+  } catch(e){
+    document.getElementById('results').innerHTML=
+      `<div style="color:var(--danger);font-size:12px;padding:20px">Search error: ${escHtml(e.message)}</div>`;
+  }
+}
+
+/* ── Render results ─────────────────────────────────────── */
+function renderResults(results, q){
+  if(!results.length){
+    document.getElementById('results').innerHTML=
+      `<div style="padding:32px;text-align:center;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:12px">
+        No results found for "<strong>${escHtml(q)}</strong>".
+      </div>`;
+    return;
+  }
+
+  const typeIcon={person:'👤',group:'🔷',activity:'📌',intel:'📄'};
+  const typeBg={
+    person:'background:rgba(232,196,74,.12)',
+    group:'background:rgba(74,143,232,.12)',
+    activity:'background:rgba(232,138,74,.12)',
+    intel:'background:rgba(74,232,122,.1)'
+  };
+
+  document.getElementById('results').innerHTML=
+    `<div style="margin-bottom:12px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">
+       ${results.length} result${results.length!==1?'s':''} for "${escHtml(q)}"
+     </div>`+
+    results.map(r=>{
+      const {type,data:d}=r;
+      if(type==='person') return `
+        <div class="result-card" onclick="showPersonDetail('${d.id}')" style="cursor:pointer">
+          <div class="result-icon" style="${typeBg.person}">${typeIcon.person}</div>
+          <div class="result-body">
+            <div class="result-title">${escHtml(d.alias)} <span style="font-weight:400;color:var(--text-dim)">— ${escHtml(d.first_name||'')} ${escHtml(d.last_name||'')}</span></div>
+            <div class="result-meta">${d.id} · ${riskBadge(d.risk_level)} ${statusBadge(d.status)} · ${escHtml(d.last_location||'Unknown location')}</div>
+            <div class="result-desc">${escHtml((d.description||'').slice(0,120))}${(d.description||'').length>120?'…':''}</div>
+            <div class="tag-strip">${(d.affiliation||[]).map(gid=>{const g=allGroups.find(x=>x.id===gid);return g?`<span style="font-family:'JetBrains Mono',monospace;font-size:9px;background:rgba(74,143,232,.12);color:#7ab4f0;border:1px solid rgba(74,143,232,.25);padding:2px 6px">${escHtml(g.name)}</span>`:''}).join('')}</div>
+          </div>
+          <span style="color:var(--accent2);font-size:20px;align-self:center">›</span>
+        </div>`;
+      if(type==='group') return `
+        <div class="result-card" onclick="showGroupDetail('${d.id}')" style="cursor:pointer">
+          <div class="result-icon" style="${typeBg.group}">${typeIcon.group}</div>
+          <div class="result-body">
+            <div class="result-title">${escHtml(d.name)}</div>
+            <div class="result-meta">${d.id} · ${d.type} · ${threatBadge(d.threat_level)} ${statusBadge(d.status)} · ${escHtml(d.base||'Unknown base')}</div>
+            <div class="result-desc">${escHtml((d.description||'').slice(0,120))}${(d.description||'').length>120?'…':''}</div>
+            <div class="result-meta" style="margin-top:4px">${d.members?.length||0} members · ${d.activityCount||0} activities</div>
+          </div>
+          <span style="color:var(--accent2);font-size:20px;align-self:center">›</span>
+        </div>`;
+      if(type==='activity') return `
+        <div class="result-card" onclick="showActivityDetail('${d.id}')" style="cursor:pointer">
+          <div class="result-icon" style="${typeBg.activity}">${typeIcon.activity}</div>
+          <div class="result-body">
+            <div class="result-title">${escHtml(d.type)} — ${escHtml(d.location||'Unknown location')}</div>
+            <div class="result-meta">${d.id} · ${formatDate(d.date)} · ${sevBadge(d.severity)}${d.alias?` · POI: ${escHtml(d.alias)}`:''}</div>
+            <div class="result-desc">${escHtml((d.description||'').slice(0,120))}${(d.description||'').length>120?'…':''}</div>
+          </div>
+          <span style="color:var(--accent2);font-size:20px;align-self:center">›</span>
+        </div>`;
+      if(type==='intel') return `
+        <div class="result-card" onclick="showIntelDetail('${d.id}')" style="cursor:pointer">
+          <div class="result-icon" style="${typeBg.intel}">${typeIcon.intel}</div>
+          <div class="result-body">
+            <div class="result-title">${escHtml(d.title)}</div>
+            <div class="result-meta">${d.id} · ${formatDate(d.date)} · ${formatDate(d.created_at)}</div>
+          </div>
+          <span style="color:var(--accent2);font-size:20px;align-self:center">›</span>
+        </div>`;
+      return '';
+    }).join('');
+}
+
+/* ── Browse all panels ──────────────────────────────────── */
+function renderBrowsePersons(){
+  const sorted=[...allPersons].sort((a,b)=>(RISK_ORDER[a.risk_level]??9)-(RISK_ORDER[b.risk_level]??9));
+  document.getElementById('bPersonsList').innerHTML=sorted.map(p=>`
+    <div class="result-card" onclick="showPersonDetail('${p.id}')" style="cursor:pointer;margin-bottom:8px">
+      <div class="result-icon" style="background:rgba(232,196,74,.12)">👤</div>
+      <div class="result-body">
+        <div class="result-title">${escHtml(p.alias)} <span style="font-weight:400;color:var(--text-dim)">— ${escHtml(p.first_name||'')} ${escHtml(p.last_name||'')}</span></div>
+        <div class="result-meta">${riskBadge(p.risk_level)} ${statusBadge(p.status)} · ${escHtml(p.nationality||'Unknown')} · ${escHtml(p.last_location||'Unknown')}</div>
+      </div>
+      <span style="color:var(--accent2);font-size:20px;align-self:center">›</span>
+    </div>`).join('')||'<div style="color:var(--text-dim);font-size:12px">No persons.</div>';
+}
+
+function renderBrowseGroups(){
+  document.getElementById('bGroupsList').innerHTML=allGroups.map(g=>`
+    <div class="result-card" onclick="showGroupDetail('${g.id}')" style="cursor:pointer;margin-bottom:8px">
+      <div class="result-icon" style="background:rgba(74,143,232,.12)">🔷</div>
+      <div class="result-body">
+        <div class="result-title">${escHtml(g.name)}</div>
+        <div class="result-meta">${threatBadge(g.threat_level)} ${statusBadge(g.status)} · ${escHtml(g.type)} · ${escHtml(g.base||'Unknown')}</div>
+      </div>
+      <span style="color:var(--accent2);font-size:20px;align-self:center">›</span>
+    </div>`).join('')||'<div style="color:var(--text-dim);font-size:12px">No groups.</div>';
+}
+
+function renderBrowseActivities(){
+  const recent=[...allActivities].sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,30);
+  document.getElementById('bActsList').innerHTML=recent.map(a=>`
+    <div class="result-card" onclick="showActivityDetail('${a.id}')" style="cursor:pointer;margin-bottom:8px">
+      <div class="result-icon" style="background:rgba(232,138,74,.12)">📌</div>
+      <div class="result-body">
+        <div class="result-title">${escHtml(a.type)} — ${escHtml(a.location||'Unknown')}</div>
+        <div class="result-meta">${formatDate(a.date)} · ${sevBadge(a.severity)}${a.alias?` · ${escHtml(a.alias)}`:''}</div>
+        <div class="result-desc">${escHtml((a.description||'').slice(0,80))}…</div>
+      </div>
+      <span style="color:var(--accent2);font-size:20px;align-self:center">›</span>
+    </div>`).join('')||'<div style="color:var(--text-dim);font-size:12px">No activities.</div>';
+}
+
+function renderBrowseIntel(){
+  document.getElementById('bIntelList').innerHTML=allIntel.map(i=>{
+    let pois=[],locs=[];
+    try{pois=JSON.parse(i.poi_refs||'[]');}catch{}
+    try{locs=JSON.parse(i.locations||'[]');}catch{}
+    return `
+    <div class="result-card" onclick="showIntelDetail('${i.id}')" style="cursor:pointer;margin-bottom:8px">
+      <div class="result-icon" style="background:rgba(74,232,122,.1)">📄</div>
+      <div class="result-body">
+        <div class="result-title">${escHtml(i.title)}</div>
+        <div class="result-meta">${formatDate(i.date)} · ${pois.length} POI refs · ${locs.length} locations</div>
+      </div>
+      <span style="color:var(--accent2);font-size:20px;align-self:center">›</span>
+    </div>`;
+  }).join('')||'<div style="color:var(--text-dim);font-size:12px">No intel reports.</div>';
+}
+
+/* ── Detail overlays (read-only) ───────────────────────── */
+function openDetail(title, html){
+  document.getElementById('detailTitle').textContent=title;
+  document.getElementById('detailBody').innerHTML=html;
+  document.getElementById('detailOverlay').classList.add('open');
+  // Init any maps inside
+  setTimeout(()=>{ const m=document.getElementById('inlineMap'); if(m&&typeof maplibregl!=='undefined'&&!m._sntMapInited) initInlineMapFromEl(); },200);
+}
+function closeDetail(){
+  document.getElementById('detailOverlay').classList.remove('open');
+  if(detailMap){detailMap.remove();detailMap=null;}
+}
+
+async function showPersonDetail(id){
+  try{
+    const p=await API.person(id);
+    const affs=(p.affiliation||[]).map(gid=>allGroups.find(g=>g.id===gid)).filter(Boolean);
+    const acts=await API.personActs(id);
+    const hasCoords=acts.filter(a=>a.lat&&a.lng);
+    openDetail(`${p.alias} — Person of Interest`,`
+      <div style="display:flex;gap:14px;align-items:flex-start;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+        <div style="width:80px;height:96px;background:var(--panel2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden">
+          ${p.photo?`<img src="${p.photo}" style="width:100%;height:100%;object-fit:cover"/>`:'<span style="font-size:28px">👤</span>'}
+        </div>
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">${p.id}</div>
+          <div style="font-family:'Bebas Neue',sans-serif;font-size:28px;color:var(--text-hi)">${escHtml(p.alias)}</div>
+          <div style="font-size:13px;color:var(--text-dim)">${escHtml(p.first_name||'')} ${escHtml(p.last_name||'')}</div>
+          <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+            ${riskBadge(p.risk_level)} ${statusBadge(p.status)}
+            ${affs.map(g=>`<span class="badge badge-blue">${escHtml(g.name)}</span>`).join('')}
+          </div>
+        </div>
+      </div>
+      <table class="data-table" style="margin-bottom:16px">
+        ${[['Nationality',p.nationality||'Unknown'],['Date of Birth',formatDate(p.dob)],
+           ['Last Seen',formatDate(p.last_seen)],['Last Location',p.last_location||'Unknown'],
+           ['Activities',acts.length]
+          ].map(([l,v])=>`<tr><td class="text-dim mono" style="width:35%;font-size:11px">${l}</td><td style="font-size:12px">${escHtml(String(v))}</td></tr>`).join('')}
+      </table>
+      <div style="margin-bottom:14px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:6px;letter-spacing:.1em">DESCRIPTION</div>
+        <div style="font-size:13px;color:var(--text);line-height:1.7">${escHtml(p.description||'No description.')}</div>
+      </div>
+      ${hasCoords.length?`
+        <div style="margin-bottom:14px">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:6px;letter-spacing:.1em">ACTIVITY LOCATIONS</div>
+          <div id="inlineMap" style="height:240px;border:1px solid var(--border)" data-points='${JSON.stringify(hasCoords.map(a=>({lat:a.lat,lng:a.lng,severity:a.severity,popup:`<b>${escHtml(a.type)}</b><br>${escHtml(a.location)}<br>${formatDate(a.date)}`})))}'></div>
+        </div>`:'' }
+      <div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:8px;letter-spacing:.1em">ACTIVITY TIMELINE (${acts.length})</div>
+        ${SUI.timeline(acts.slice(0,6),{linkItems:false})}
+      </div>
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+        <a href="person.html?id=${p.id}" class="btn btn-secondary btn-sm">Open Full Record →</a>
+      </div>`);
+    initInlineMapFromEl();
+  }catch(e){showToast('Failed to load person: '+e.message,'error');}
+}
+
+async function showGroupDetail(id){
+  try{
+    const g=await API.group(id);
+    const members=(g.members||[]).map(mid=>allPersons.find(p=>p.id===mid)).filter(Boolean);
+    const acts=await API.groupActs(id);
+    const hasCoords=acts.filter(a=>a.lat&&a.lng);
+    const leader=allPersons.find(p=>p.id===g.leader_id);
+    openDetail(`${g.name} — Group of Interest`,`
+      <div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">${g.id} · ${g.type}</div>
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:28px;color:var(--text-hi)">${escHtml(g.name)}</div>
+        <div style="margin-top:6px;display:flex;gap:6px">${threatBadge(g.threat_level)} ${statusBadge(g.status)}</div>
+      </div>
+      <table class="data-table" style="margin-bottom:16px">
+        ${[['Founded',g.founded||'Unknown'],['Base',g.base||'Unknown'],
+           ['Leader',leader?leader.alias:'Unknown'],['Members',members.length],['Activities',acts.length]
+          ].map(([l,v])=>`<tr><td class="text-dim mono" style="width:35%;font-size:11px">${l}</td><td style="font-size:12px">${escHtml(String(v))}</td></tr>`).join('')}
+      </table>
+      <div style="margin-bottom:14px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:6px">DESCRIPTION</div>
+        <div style="font-size:13px;color:var(--text);line-height:1.7">${escHtml(g.description||'No description.')}</div>
+      </div>
+      ${members.length?`
+        <div style="margin-bottom:14px">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:8px">MEMBERS (${members.length})</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${members.map(m=>`<span onclick="closeDetail();showPersonDetail('${m.id}')" style="cursor:pointer;background:var(--panel2);border:1px solid var(--border);padding:5px 10px;font-size:12px">${escHtml(m.alias)} ${riskBadge(m.risk_level)}</span>`).join('')}
+          </div>
+        </div>`:'' }
+      ${hasCoords.length?`
+        <div style="margin-bottom:14px">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:6px">ACTIVITY LOCATIONS</div>
+          <div id="inlineMap" style="height:240px;border:1px solid var(--border)" data-points='${JSON.stringify(hasCoords.map(a=>({lat:a.lat,lng:a.lng,severity:a.severity,popup:`<b>${escHtml(a.type)}</b><br>${escHtml(a.location)}<br>${formatDate(a.date)}`})))}'></div>
+        </div>`:'' }
+      <div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:8px">ACTIVITY TIMELINE</div>
+        ${SUI.timeline(acts.slice(0,5),{showPoi:true,linkItems:false})}
+      </div>
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+        <a href="group.html?id=${g.id}" class="btn btn-secondary btn-sm">Open Full Record →</a>
+      </div>`);
+    initInlineMapFromEl();
+  }catch(e){showToast('Failed to load group: '+e.message,'error');}
+}
+
+async function showActivityDetail(id){
+  try{
+    const a=await API.activity(id);
+    const poi=allPersons.find(p=>p.id===a.poi_id);
+    const grp=allGroups.find(g=>g.id===a.group_id);
+    openDetail(`${a.type} — ${a.location}`,`
+      <div style="border-left:4px solid ${{CRITICAL:'var(--danger)',HIGH:'var(--warning)',MEDIUM:'var(--accent)',LOW:'var(--green)'}[a.severity]||'var(--border)'};padding-left:16px;margin-bottom:16px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">${a.id}</div>
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:24px;color:var(--text-hi)">${escHtml(a.location||'Unknown Location')}</div>
+        <div style="margin-top:4px;display:flex;gap:6px">${sevBadge(a.severity)}<span class="badge badge-grey">${escHtml(a.type)}</span></div>
+      </div>
+      <table class="data-table" style="margin-bottom:14px">
+        ${[['Date',formatDate(a.date)],['Type',a.type],['Severity',a.severity],
+           ['Reported By',a.reported_by||'Unknown'],
+           ['POI',poi?poi.alias:(a.poi_id||'None')],
+           ['Group',grp?grp.name:(a.group_id||'None')],
+           ['Coordinates',a.lat&&a.lng?`${a.lat.toFixed(4)}, ${a.lng.toFixed(4)}`:'Not recorded']
+          ].map(([l,v])=>`<tr><td class="text-dim mono" style="width:35%;font-size:11px">${l}</td><td style="font-size:12px">${escHtml(String(v))}</td></tr>`).join('')}
+      </table>
+      <div style="margin-bottom:14px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:6px">DESCRIPTION</div>
+        <div style="font-size:13px;color:var(--text);line-height:1.7;white-space:pre-wrap">${escHtml(a.description||'')}</div>
+      </div>
+      ${a.lat&&a.lng?`
+        <div style="margin-bottom:14px">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:6px">LOCATION</div>
+          <div id="inlineMap" style="height:220px;border:1px solid var(--border)" data-points='${JSON.stringify([{lat:a.lat,lng:a.lng,severity:a.severity,popup:`<b>${escHtml(a.type)}</b><br>${escHtml(a.location)}<br>${formatDate(a.date)}`}])}'></div>
+        </div>`:'' }
+      ${(a.related||[]).length?`
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:8px">RELATED ACTIVITIES (${a.related.length})</div>
+          ${a.related.map(r=>`<div onclick="closeDetail();showActivityDetail('${r.id}')" style="cursor:pointer;background:var(--panel2);border:1px solid var(--border);padding:8px 12px;margin-bottom:6px">
+            <div style="font-size:12px;color:var(--text-hi)">${escHtml(r.type)} — ${escHtml(r.location)}</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">${formatDate(r.date)} · ${sevBadge(r.severity)}</div>
+          </div>`).join('')}
+        </div>`:'' }
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+        <a href="activity.html?id=${a.id}" class="btn btn-secondary btn-sm">Open Full Record →</a>
+      </div>`);
+    initInlineMapFromEl();
+  }catch(e){showToast('Failed to load activity: '+e.message,'error');}
+}
+
+async function showIntelDetail(id){
+  try{
+    const i=await API.intelGet(id);
+    let pois=[],grps=[],locs=[],victims=[];
+    try{pois=JSON.parse(i.poi_refs||'[]');}catch{}
+    try{grps=JSON.parse(i.group_refs||'[]');}catch{}
+    try{locs=JSON.parse(i.locations||'[]');}catch{}
+    try{victims=JSON.parse(i.victims||'[]');}catch{}
+    const matchPois=pois.map(pid=>allPersons.find(p=>p.id===pid)).filter(Boolean);
+    const matchGrps=grps.map(gid=>allGroups.find(g=>g.id===gid)).filter(Boolean);
+    openDetail(i.title,`
+      <div style="margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border)">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">${i.id} · ${formatDate(i.date)}</div>
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:24px;color:var(--text-hi)">${escHtml(i.title)}</div>
+      </div>
+      ${matchPois.length?`<div style="margin-bottom:12px"><div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:6px">PERSONS REFERENCED</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${matchPois.map(p=>`<span onclick="closeDetail();showPersonDetail('${p.id}')" style="cursor:pointer;background:rgba(232,196,74,.12);border:1px solid rgba(232,196,74,.3);color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 8px">${escHtml(p.alias)} ${riskBadge(p.risk_level)}</span>`).join('')}</div></div>`:'' }
+      ${matchGrps.length?`<div style="margin-bottom:12px"><div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:6px">GROUPS REFERENCED</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${matchGrps.map(g=>`<span onclick="closeDetail();showGroupDetail('${g.id}')" style="cursor:pointer;background:rgba(74,143,232,.12);border:1px solid rgba(74,143,232,.3);color:#7ab4f0;font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 8px">${escHtml(g.name)}</span>`).join('')}</div></div>`:'' }
+      ${locs.length?`<div style="margin-bottom:12px"><div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:6px">LOCATIONS</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${locs.map(l=>`<span style="background:rgba(74,232,122,.12);border:1px solid rgba(74,232,122,.25);color:#6aeaa0;font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 8px">📍 ${escHtml(l)}</span>`).join('')}</div></div>`:'' }
+      ${victims.length?`<div style="margin-bottom:12px"><div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:6px">VICTIMS / AFFECTED</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${victims.map(v=>`<span style="background:rgba(232,74,74,.1);border:1px solid rgba(232,74,74,.25);color:#e88a8a;font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 8px">⚠ ${escHtml(v)}</span>`).join('')}</div></div>`:'' }
+      ${i.analysis_result?`<div style="margin-bottom:14px;background:var(--panel2);border:1px solid var(--border);padding:10px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);line-height:1.7">${escHtml(i.analysis_result)}</div>`:'' }
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);margin-bottom:8px">REPORT BODY</div>
+      <div style="font-size:13px;color:var(--text);line-height:1.8;white-space:pre-wrap;background:var(--surface);padding:14px;border:1px solid var(--border)">${escHtml(i.body||i.text||'')}</div>`);
+  }catch(e){showToast('Failed to load intel: '+e.message,'error');}
+}
+
+/* ── Inline map init ────────────────────────────────────── */
+function initInlineMapFromEl(){
+  setTimeout(()=>{
+    const el=document.getElementById('inlineMap');
+    if(!el||typeof maplibregl==='undefined'||el._sntMapInited) return;
+    try{
+      const points=JSON.parse(el.dataset.points||'[]');
+      const SEV={CRITICAL:'#e84a4a',HIGH:'#e88a4a',MEDIUM:'#e8c44a',LOW:'#4ae87a'};
+      const withCoords=points.filter(p=>p.lat&&p.lng);
+      if(!withCoords.length) return;
+      el._sntMapInited=true;
+      detailMap=MAP.create(el, {center:[withCoords[0].lat,withCoords[0].lng], zoom:withCoords.length>1?5:11, scrollZoom:false});
+      detailMap.on('load', () => {
+        withCoords.forEach(p=>{
+          const col=SEV[p.severity||p.risk]||'#4a8fe8';
+          const m=MAP.circleMarker(detailMap, p.lat, p.lng, {radius:9, color:col, weight:2});
+          if(p.popup) MAP.bindHoverPopup(m, p.popup);
+        });
+        if(withCoords.length>1) MAP.fitToPoints(detailMap, withCoords.map(p=>[p.lat,p.lng]), 20);
+      });
+    }catch(e){console.warn('Map init error:',e);}
+  },300);
+}
+
+// Close on backdrop click
+document.getElementById('detailOverlay').addEventListener('click',e=>{
+  if(e.target===document.getElementById('detailOverlay')) closeDetail();
+});
+// Close on Escape
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDetail(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTINEL – Dashboard</title>
+    <link rel="stylesheet" href="vendor/fonts/fonts.css"/>
+    <link rel="stylesheet" href="sentinel.css">
+    <style>
+        .dash-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 14px;
+            margin-bottom: 20px;
+        }
+        .dash-stats-grid .stat-tile { position: relative; }
+        .dash-stats-grid .stat-icon { position: absolute; top: 16px; right: 18px; font-size: 20px; opacity: 0.5; }
+        .recent-item {
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+        .recent-item:last-child { border-bottom: none; }
+        .recent-item-title a {
+            color: var(--text-hi);
+            font-weight: 500;
+            text-decoration: none;
+        }
+        .recent-item-title a:hover { color: var(--accent2); }
+        .recent-item-meta {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-dim);
+            margin-top: 3px;
+        }
+    </style>
+</head>
+<body>
+<div class="class-banner">⚠ RESTRICTED ACCESS — AUTHORISED PERSONNEL ONLY ⚠</div>
+<div class="app-shell">
+  <div id="sidebarMount"></div>
+  <div class="main-content">
+    <div id="topbarMount"></div>
+    <div class="page-body">
+
+        <div class="page-heading">
+            <h2>Dashboard</h2>
+            <div class="sub">System overview</div>
+        </div>
+
+        <div class="dash-stats-grid" id="statsGrid">
+            <!-- Populated by JS below -->
+        </div>
+
+        <div class="card" id="recentActivity">
+            <div class="card-header"><span class="card-title">Recent Activities</span></div>
+            <div id="recentList">
+                <p style="color:var(--text-dim);font-size:12px">Loading…</p>
+            </div>
+        </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="/sentinel.js"></script>
+<script>
+    const user = requireAuth();
+    if (user) {
+        buildSidebar('dashboard');
+        buildTopbar([{ label: 'Dashboard' }]);
+        initTopbar();
+        loadStats();
+        loadRecentActivities();
+    }
+
+    async function loadStats() {
+        const grid = document.getElementById("statsGrid");
+        if (!grid) return;
+
+        const tiles = [
+            { label: "Persons of Interest", key: "persons",    icon: "👤" },
+            { label: "Groups",              key: "groups",     icon: "🏛" },
+            { label: "Activities",          key: "activities", icon: "📋" },
+            { label: "Hotspots",            key: "hotspots",   icon: "📍" },
+        ];
+
+        grid.innerHTML = tiles.map(t => `
+            <div class="stat-tile">
+                <span class="stat-icon">${t.icon}</span>
+                <div class="s-val" id="count-${t.key}">—</div>
+                <div class="s-label">${t.label}</div>
+            </div>
+        `).join("");
+
+        try {
+            const stats = await API.stats();
+            for (const t of tiles) {
+                const el = document.getElementById(`count-${t.key}`);
+                if (el && stats[t.key] !== undefined) el.textContent = stats[t.key];
+            }
+        } catch (err) {
+            console.warn("Stats fetch failed", err.message);
+        }
+    }
+
+    async function loadRecentActivities() {
+        const list = document.getElementById("recentList");
+        if (!list) return;
+        try {
+            const activities = await API.activities();
+            if (!activities || activities.length === 0) {
+                list.innerHTML = "<p style='color:var(--text-dim);font-size:12px'>No activities recorded yet.</p>";
+                return;
+            }
+            const recent = activities.slice(0, 10);
+            list.innerHTML = recent.map(a => `
+                <div class="recent-item">
+                    <div class="recent-item-title">
+                        <a href="/activity.html?id=${escHtml(String(a.id))}">${escHtml(a.alias || a.type)}</a>
+                    </div>
+                    <div class="recent-item-meta">
+                        ${a.type ? escHtml(a.type) + " &middot; " : ""}
+                        ${a.date ? formatDate(a.date) : "Date unknown"}
+                        ${a.location ? " &middot; " + escHtml(a.location) : ""}
+                    </div>
+                </div>
+            `).join("");
+        } catch (err) {
+            list.innerHTML = `<p style="color:var(--danger);font-size:12px">Failed to load activities: ${escHtml(err.message)}</p>`;
+        }
+    }
+</script>
+
+</body>
+</html>

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SENTINEL — Intelligence Tracking System</title>
+  <script>
+    /* If already signed in, skip the public splash and go straight to the
+       dashboard. "Home" / the logo / the footer brand all link here, so this
+       makes them land on the dashboard instead of the login page. Runs before
+       any render to avoid a flash of the splash. An expired token is handled
+       by dashboard.html itself (401 -> login). */
+    if (sessionStorage.getItem('snt_token')) {
+      window.location.replace('dashboard.html');
+    }
+  </script>
+  <link rel="stylesheet" href="vendor/fonts/fonts.css"/>
+  <script>
+    /* Apply saved theme before first paint to avoid a flash of the wrong theme */
+    (function () {
+      var t = localStorage.getItem('snt_theme') === 'light' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root, [data-theme="dark"] {
+      --black:    #0a0c0f;
+      --surface:  #111418;
+      --panel:    #181d24;
+      --border:   #252b35;
+      --muted:    #3a4352;
+      --text-dim: #6b7a90;
+      --text:     #c8d0dc;
+      --text-hi:  #eef1f5;
+      --accent:   #e8c44a;      /* amber gold — classified dossier feel */
+      --accent2:  #4a8fe8;      /* cool blue for secondary */
+      --danger:   #e84a4a;
+      --overlay-bg: rgba(10,12,15,0.9);
+      --grid-line: rgba(74,143,232,0.04);
+      --logo-glow: rgba(232,196,74,0.15);
+      --hex-opacity: 0.04;
+    }
+
+    [data-theme="light"] {
+      --black:    #f4f5f7;
+      --surface:  #ffffff;
+      --panel:    #ffffff;
+      --border:   #dde1e7;
+      --muted:    #aab2bf;
+      --text-dim: #6b7585;
+      --text:     #2a313c;
+      --text-hi:  #11151c;
+      --accent:   #b8860b;
+      --accent2:  #2563c7;
+      --danger:   #d23a3a;
+      --overlay-bg: rgba(255,255,255,0.92);
+      --grid-line: rgba(37,99,199,0.05);
+      --logo-glow: rgba(184,134,11,0.12);
+      --hex-opacity: 0.07;
+    }
+
+    html { color-scheme: dark; }
+    [data-theme="light"] html { color-scheme: light; }
+
+    html, body {
+      height: 100%;
+      background: var(--black);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      transition: background-color .2s ease, color .2s ease;
+    }
+
+    /* ── BACKGROUND SCENE ── */
+    .bg {
+      position: fixed; inset: 0; z-index: 0;
+      overflow: hidden;
+    }
+    .bg-grid {
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(var(--grid-line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+      background-size: 48px 48px;
+      animation: gridDrift 80s linear infinite;
+    }
+    @keyframes gridDrift { to { background-position: 48px 48px; } }
+
+    .bg-radial {
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(ellipse 60% 50% at 50% 100%, rgba(232,196,74,0.07) 0%, transparent 70%),
+        radial-gradient(ellipse 40% 60% at 15% 20%, rgba(74,143,232,0.08) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 40% at 85% 30%, rgba(232,74,74,0.04) 0%, transparent 60%);
+    }
+    [data-theme="light"] .bg-radial {
+      background:
+        radial-gradient(ellipse 60% 50% at 50% 100%, rgba(184,134,11,0.06) 0%, transparent 70%),
+        radial-gradient(ellipse 40% 60% at 15% 20%, rgba(37,99,199,0.06) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 40% at 85% 30%, rgba(210,58,58,0.03) 0%, transparent 60%);
+    }
+
+    /* Scanning line */
+    .scan-line {
+      position: absolute; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, transparent 0%, rgba(232,196,74,0.3) 30%, rgba(232,196,74,0.7) 50%, rgba(232,196,74,0.3) 70%, transparent 100%);
+      animation: scan 6s ease-in-out infinite;
+      top: 0;
+    }
+    @keyframes scan { 0%,100% { top: -2px; opacity:0; } 10% { opacity:1; } 90% { opacity:1; } 50% { top: 100%; } }
+
+    /* Floating dots */
+    .dots-layer { position: absolute; inset: 0; }
+    .dot {
+      position: absolute; border-radius: 50%;
+      background: var(--accent2); opacity: 0;
+      animation: dotPulse var(--dur, 4s) var(--delay, 0s) ease-in-out infinite;
+    }
+    @keyframes dotPulse {
+      0%,100% { opacity:0; transform: scale(0.5); }
+      50% { opacity:0.6; transform: scale(1); }
+    }
+
+    /* ── CONTENT ── */
+    .page {
+      position: relative; z-index: 1;
+      min-height: 100vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 40px 24px;
+    }
+
+    /* Classification banner */
+    .class-banner {
+      position: fixed; top: 0; left: 0; right: 0;
+      background: var(--danger);
+      text-align: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; letter-spacing: 0.2em;
+      color: #fff; padding: 5px;
+      z-index: 100;
+    }
+
+    /* Theme toggle — top-right corner */
+    .theme-toggle-fab {
+      position: fixed; top: 36px; right: 20px; z-index: 110;
+      display: flex; align-items: center; gap: 8px;
+      cursor: pointer; user-select: none;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; letter-spacing: 0.08em; color: var(--text-dim);
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 7px 12px; border-radius: 14px;
+      transition: border-color .2s, background-color .2s;
+    }
+    .theme-toggle-fab:hover { border-color: var(--accent2); color: var(--text); }
+    .theme-toggle-track {
+      width: 34px; height: 18px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      position: relative; flex-shrink: 0;
+    }
+    .theme-toggle-thumb {
+      position: absolute; top: 1px; left: 1px;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      transition: transform .25s cubic-bezier(.4,0,.2,1), background .2s;
+    }
+    [data-theme="light"] .theme-toggle-thumb { transform: translateX(16px); background: var(--accent2); }
+    .theme-toggle-thumb svg { width: 9px; height: 9px; color: var(--black); }
+
+    .hero {
+      text-align: center;
+      max-width: 680px;
+    }
+
+    .eyebrow {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; letter-spacing: 0.25em;
+      color: var(--accent); text-transform: uppercase;
+      margin-bottom: 20px;
+      display: flex; align-items: center; justify-content: center; gap: 12px;
+    }
+    .eyebrow::before, .eyebrow::after {
+      content: ''; flex: 1; max-width: 80px;
+      height: 1px; background: var(--accent); opacity: 0.4;
+    }
+
+    .logo-mark {
+      width: 80px; height: 80px;
+      border: 2px solid var(--accent);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 28px;
+      position: relative;
+      box-shadow: 0 0 40px var(--logo-glow), inset 0 0 20px var(--logo-glow);
+    }
+    .logo-mark::before {
+      content: '';
+      position: absolute; inset: 6px;
+      border: 1px solid rgba(232,196,74,0.25);
+      border-radius: 50%;
+    }
+    .logo-mark svg { width: 36px; height: 36px; }
+    .logo-mark svg * { stroke: var(--accent) !important; }
+    .logo-mark svg circle[fill] { fill: var(--accent) !important; }
+
+    h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: clamp(56px, 10vw, 96px);
+      letter-spacing: 0.06em;
+      color: var(--text-hi);
+      line-height: 0.95;
+      margin-bottom: 8px;
+    }
+    h1 span { color: var(--accent); }
+
+    .tagline {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px; letter-spacing: 0.12em;
+      color: var(--text-dim);
+      margin-bottom: 48px;
+      text-transform: uppercase;
+    }
+
+    .status-row {
+      display: flex; align-items: center; justify-content: center;
+      gap: 24px; flex-wrap: wrap;
+      margin-bottom: 52px;
+    }
+    .status-chip {
+      display: flex; align-items: center; gap: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; letter-spacing: 0.1em;
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      padding: 6px 14px; border-radius: 2px;
+    }
+    .status-chip .dot-status {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: #4ae87a;
+      box-shadow: 0 0 6px #4ae87a;
+      animation: blink 2s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+
+    .cta-btn {
+      display: inline-flex; align-items: center; gap: 12px;
+      background: var(--accent);
+      color: var(--black);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px; font-weight: 500;
+      letter-spacing: 0.15em; text-transform: uppercase;
+      text-decoration: none;
+      padding: 16px 40px;
+      border: none; cursor: pointer;
+      transition: all 0.2s;
+      position: relative; overflow: hidden;
+    }
+    [data-theme="light"] .cta-btn { color: #fff; }
+    .cta-btn::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: rgba(255,255,255,0);
+      transition: background 0.2s;
+    }
+    .cta-btn:hover::after { background: rgba(255,255,255,0.12); }
+    .cta-btn:hover { box-shadow: 0 0 40px rgba(232,196,74,0.3); }
+    .cta-btn:active { transform: scale(0.98); }
+
+    .cta-btn svg { width: 16px; height: 16px; }
+
+    /* Stats strip */
+    .stats-strip {
+      display: flex; gap: 0;
+      border: 1px solid var(--border);
+      margin-top: 64px;
+      width: 100%; max-width: 560px;
+    }
+    .stat {
+      flex: 1; padding: 16px 0; text-align: center;
+      border-right: 1px solid var(--border);
+    }
+    .stat:last-child { border-right: none; }
+    .stat-val {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 28px; color: var(--accent);
+      letter-spacing: 0.05em;
+    }
+    .stat-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; letter-spacing: 0.12em;
+      color: var(--text-dim); text-transform: uppercase;
+      margin-top: 2px;
+    }
+
+    /* Bottom bar */
+    .footer-bar {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      padding: 10px 24px;
+      border-top: 1px solid var(--border);
+      background: var(--overlay-bg);
+      backdrop-filter: blur(8px);
+      display: flex; align-items: center; justify-content: space-between;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; letter-spacing: 0.1em;
+      color: var(--text-dim);
+      z-index: 50;
+    }
+    .footer-bar .ts { color: var(--muted); }
+
+    /* Hexagon decoration */
+    .hex-bg {
+      position: absolute; opacity: var(--hex-opacity);
+      right: -80px; top: 50%;
+      transform: translateY(-50%);
+      width: 500px; height: 500px;
+      pointer-events: none;
+    }
+
+    @media (max-width: 480px) {
+      .stats-strip { flex-direction: column; }
+      .stat { border-right: none; border-bottom: 1px solid var(--border); }
+      .stat:last-child { border-bottom: none; }
+      .theme-toggle-fab { top: 32px; right: 12px; padding: 6px 10px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="class-banner">⚠ RESTRICTED ACCESS — AUTHORISED PERSONNEL ONLY ⚠</div>
+
+<!-- Theme toggle -->
+<div class="theme-toggle-fab" id="themeToggleFab" role="switch" tabindex="0" title="Toggle light / dark theme">
+  <span id="themeLabel">DARK</span>
+  <span class="theme-toggle-track">
+    <span class="theme-toggle-thumb" id="themeThumb"></span>
+  </span>
+</div>
+
+<!-- Background -->
+<div class="bg">
+  <div class="bg-grid"></div>
+  <div class="bg-radial"></div>
+  <div class="scan-line"></div>
+  <div class="dots-layer" id="dotsLayer"></div>
+</div>
+
+<!-- Main content -->
+<div class="page">
+  <div class="hero">
+
+    <div class="eyebrow">Intelligence Platform</div>
+
+    <div class="logo-mark">
+      <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="18" cy="18" r="10" stroke="#e8c44a" stroke-width="1.5"/>
+        <circle cx="18" cy="18" r="3" fill="#e8c44a"/>
+        <line x1="18" y1="4" x2="18" y2="8" stroke="#e8c44a" stroke-width="1.5"/>
+        <line x1="18" y1="28" x2="18" y2="32" stroke="#e8c44a" stroke-width="1.5"/>
+        <line x1="4" y1="18" x2="8" y2="18" stroke="#e8c44a" stroke-width="1.5"/>
+        <line x1="28" y1="18" x2="32" y2="18" stroke="#e8c44a" stroke-width="1.5"/>
+        <circle cx="18" cy="18" r="16" stroke="#e8c44a" stroke-width="0.5" stroke-dasharray="4 4"/>
+      </svg>
+    </div>
+
+    <h1><span>S</span>ENTINEL</h1>
+    <p class="tagline">Persons &amp; Groups of Interest · Intelligence &amp; Activity Tracking</p>
+
+    <div class="status-row">
+      <div class="status-chip"><span class="dot-status"></span> System Online</div>
+      <div class="status-chip">Version 2.1</div>
+      <div class="status-chip" id="localTime">Loading…</div>
+    </div>
+
+    <a href="login.html" class="cta-btn">
+      <svg viewBox="0 0 16 16" fill="none"><rect x="2" y="6" width="12" height="8" rx="1" stroke="currentColor" stroke-width="1.5"/><path d="M5 6V4.5a3 3 0 0 1 6 0V6" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="10.5" r="1.2" fill="currentColor"/></svg>
+      Secure Login
+    </a>
+
+    <div class="stats-strip">
+      <div class="stat">
+        <div class="stat-val">POI</div>
+        <div class="stat-label">Persons Tracked</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val">GOI</div>
+        <div class="stat-label">Groups Monitored</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val">GIS</div>
+        <div class="stat-label">Location Mapping</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val">NLP</div>
+        <div class="stat-label">Text Analysis</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- SVG hex watermark -->
+  <svg class="hex-bg" viewBox="0 0 500 500">
+    <polygon points="250,30 460,145 460,355 250,470 40,355 40,145" stroke="var(--accent2)" stroke-width="2" fill="none"/>
+    <polygon points="250,90 410,175 410,325 250,410 90,325 90,175" stroke="var(--accent2)" stroke-width="1" fill="none"/>
+    <polygon points="250,150 360,205 360,295 250,350 140,295 140,205" stroke="var(--accent2)" stroke-width="1" fill="none"/>
+  </svg>
+</div>
+
+<div class="footer-bar">
+  <span>SENTINEL Intelligence Platform — Intranet Deployment</span>
+  <span class="ts" id="footerTs"></span>
+</div>
+
+<script>
+  /* ── Theme toggle (self-contained — index.html has no sentinel.js) ── */
+  const ICON_SUN  = '<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.4"/><line x1="8" y1="1" x2="8" y2="2.5" stroke="currentColor" stroke-width="1.4"/><line x1="8" y1="13.5" x2="8" y2="15" stroke="currentColor" stroke-width="1.4"/><line x1="1" y1="8" x2="2.5" y2="8" stroke="currentColor" stroke-width="1.4"/><line x1="13.5" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.4"/><line x1="3.1" y1="3.1" x2="4.2" y2="4.2" stroke="currentColor" stroke-width="1.4"/><line x1="11.8" y1="11.8" x2="12.9" y2="12.9" stroke="currentColor" stroke-width="1.4"/><line x1="3.1" y1="12.9" x2="4.2" y2="11.8" stroke="currentColor" stroke-width="1.4"/><line x1="11.8" y1="4.2" x2="12.9" y2="3.1" stroke="currentColor" stroke-width="1.4"/></svg>';
+  const ICON_MOON = '<svg viewBox="0 0 16 16" fill="none"><path d="M13.5 9.5A6 6 0 1 1 6.5 2.5a5 5 0 0 0 7 7z" stroke="currentColor" stroke-width="1.3" fill="currentColor" fill-opacity="0.15"/></svg>';
+
+  function getTheme() { return localStorage.getItem('snt_theme') === 'light' ? 'light' : 'dark'; }
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    localStorage.setItem('snt_theme', t);
+    document.getElementById('themeLabel').textContent = t === 'light' ? 'LIGHT' : 'DARK';
+    document.getElementById('themeThumb').innerHTML = t === 'light' ? ICON_SUN : ICON_MOON;
+  }
+  function toggleTheme() { applyTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
+
+  applyTheme(getTheme());
+  const fab = document.getElementById('themeToggleFab');
+  fab.addEventListener('click', toggleTheme);
+  fab.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleTheme(); } });
+
+  // Floating dots
+  const layer = document.getElementById('dotsLayer');
+  for (let i = 0; i < 30; i++) {
+    const d = document.createElement('div');
+    d.className = 'dot';
+    const size = Math.random() * 4 + 2;
+    d.style.cssText = `
+      width:${size}px; height:${size}px;
+      left:${Math.random()*100}%; top:${Math.random()*100}%;
+      --dur:${(Math.random()*6+3).toFixed(1)}s;
+      --delay:${(Math.random()*6).toFixed(1)}s;
+      background: ${Math.random() > 0.5 ? '#4a8fe8' : '#e8c44a'};
+    `;
+    layer.appendChild(d);
+  }
+
+  // Clock
+  function tick() {
+    const now = new Date();
+    const ts = now.toLocaleString('en-GB', { weekday:'short', year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    document.getElementById('localTime').textContent = ts;
+    document.getElementById('footerTs').textContent = ts;
+  }
+  tick(); setInterval(tick, 1000);
+</script>
+</body>
+</html>

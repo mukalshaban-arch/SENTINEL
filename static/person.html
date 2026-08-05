@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>SENTINEL — Person Detail</title>
+  <link rel="stylesheet" href="vendor/fonts/fonts.css"/>
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css"/>
+  <link rel="stylesheet" href="sentinel.css"/>
+  <script>
+    /* Apply saved theme before first paint to avoid a flash of the wrong theme */
+    (function () {
+      var t = localStorage.getItem('snt_theme') === 'light' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+</head>
+<body>
+<div class="class-banner">⚠ RESTRICTED ACCESS — AUTHORISED PERSONNEL ONLY ⚠</div>
+<div class="app-shell">
+  <div id="sidebarMount"></div>
+  <div class="main-content">
+    <div id="topbarMount"></div>
+    <div class="page-body" id="pageBody">
+      <div style="display:flex;align-items:center;justify-content:center;height:200px;gap:12px;color:var(--text-dim)">
+        <span class="spinner"></span> Loading person record…
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Log Activity Modal -->
+<div class="modal-overlay hidden" id="actModal">
+  <div class="modal-box" style="max-width:620px">
+    <div class="modal-header"><h3>Log Activity</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('actModal')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Type</label>
+          <select class="form-select" id="aType">
+            <option>MEETING</option><option>MOVEMENT</option><option>COMMUNICATION</option>
+            <option>FINANCIAL</option><option>SURVEILLANCE</option><option>OTHER</option>
+          </select></div>
+        <div class="form-group"><label class="form-label">Date *</label>
+          <input type="date" class="form-input" id="aDate"/></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Location *</label>
+          <input class="form-input" id="aLoc" placeholder="City, Country"/></div>
+        <div class="form-group"><label class="form-label">Severity</label>
+          <select class="form-select" id="aSev">
+            <option>LOW</option><option>MEDIUM</option><option selected>HIGH</option><option>CRITICAL</option>
+          </select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Latitude</label>
+          <input type="number" step="any" class="form-input" id="aLat" placeholder="-1.2864"/></div>
+        <div class="form-group"><label class="form-label">Longitude</label>
+          <input type="number" step="any" class="form-input" id="aLng" placeholder="36.817"/></div>
+      </div>
+      <div class="form-group"><label class="form-label">Group (optional)</label>
+        <input class="form-input" id="aGroup" placeholder="Group ID e.g. G001"/></div>
+      <div class="form-group"><label class="form-label">Description *</label>
+        <textarea class="form-textarea" id="aDesc" placeholder="What was observed…"></textarea></div>
+      <div class="form-group"><label class="form-label">Reported By</label>
+        <input class="form-input" id="aBy" placeholder="Analyst ID or field unit"/></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('actModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveActivity()">Log Activity</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Person Modal -->
+<div class="modal-overlay hidden" id="editModal">
+  <div class="modal-box" style="max-width:640px">
+    <div class="modal-header"><h3>Edit Person Record</h3>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal('editModal')">✕</button></div>
+    <div class="modal-body" id="editModalBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('editModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/maplibre/maplibre-gl.js"></script>
+<script src="sentinel.js"></script>
+<script>
+const user = requireAuth();
+const canEdit = ['ADMIN','ANALYST'].includes(user.role);
+const id = new URLSearchParams(location.search).get('id');
+if (!id) location.href = 'persons.html';
+
+buildSidebar('persons');
+buildTopbar([{label:'Persons of Interest',href:'persons.html'},{label:'Loading…'}]);
+initTopbar();
+
+let poi = null, activities = [], filteredActivities = [], allGroups = [], personMapObj = null, personMarkers = [];
+const SEV_COL = {CRITICAL:'#e84a4a',HIGH:'#e88a4a',MEDIUM:'#e8c44a',LOW:'#4ae87a'};
+
+(async () => {
+  try {
+    [poi, activities, allGroups] = await Promise.all([API.person(id), API.personActs(id), API.groups()]);
+    filteredActivities = activities;
+    buildTopbar([{label:'Persons of Interest',href:'persons.html'},{label:poi.alias}]);
+    initTopbar();
+    renderPage();
+  } catch(e) {
+    document.getElementById('pageBody').innerHTML = `<div style="padding:40px;text-align:center;color:var(--danger)">Error: ${escHtml(e.message)}</div>`;
+  }
+})();
+
+function renderPage() {
+  const affGrps   = (poi.affiliation||[]).map(gid=>allGroups.find(g=>g.id===gid)).filter(Boolean);
+  const contacts  = poi.contacts||[];
+  const hasCoords = activities.filter(a=>a.lat&&a.lng);
+
+  document.getElementById('pageBody').innerHTML = `
+  <div class="detail-header">
+    <div class="detail-header-inner">
+      <div class="detail-photo" style="min-height:170px">
+        ${poi.photo
+          ? `<img src="${poi.photo}" alt="${escHtml(poi.alias)}"/>`
+          : `<div class="detail-photo-placeholder">${iUsers}<span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--muted);letter-spacing:.1em">NO PHOTO</span></div>`}
+        ${canEdit?`<div class="detail-photo-upload-btn" onclick="document.getElementById('photoFile').click()">📷 Upload Photo</div>
+          <input type="file" id="photoFile" accept="image/*" class="hidden" onchange="uploadPhoto(this)"/>`:''}
+      </div>
+      <div class="detail-header-body">
+        <div class="detail-id">${escHtml(poi.id)} · PERSON OF INTEREST</div>
+        <div class="detail-title">${escHtml(poi.alias)}</div>
+        <div class="detail-subtitle">${escHtml(poi.first_name||'')} ${escHtml(poi.last_name||'')}</div>
+        <div class="detail-badges">
+          ${riskBadge(poi.risk_level)} ${statusBadge(poi.status)}
+          ${affGrps.map(g=>`<a href="group.html?id=${g.id}" class="badge badge-blue" style="text-decoration:none">${escHtml(g.name)}</a>`).join('')}
+        </div>
+        <div id="tagsArea" style="margin-top:8px"></div>
+        <div class="detail-meta-row">
+          ${[['Nationality',poi.nationality||'Unknown'],['Date of Birth',formatDate(poi.dob)||'Unknown'],
+             ['Last Seen',formatDate(poi.last_seen)||'Unknown'],['Last Location',poi.last_location||'Unknown'],
+             ['Activities',activities.length],['Connections',contacts.length],['Record Created',formatDate(poi.created_at)]
+            ].map(([l,v])=>`<div class="detail-meta-item"><div class="detail-meta-label">${l}</div><div class="detail-meta-val">${escHtml(String(v))}</div></div>`).join('')}
+        </div>
+      </div>
+      <div class="detail-actions">
+        ${canEdit?`<button class="btn btn-primary btn-sm" onclick="openActivityModal()">+ Log Activity</button>
+          <button class="btn btn-secondary btn-sm" onclick="openEditModal()">✎ Edit</button>
+          <button class="btn btn-secondary btn-sm" onclick="uploadLikeness()">📷 Likeness</button>`:''}
+        <button class="btn btn-secondary btn-sm" onclick="generateReport()">🖨 Report</button>
+        <a href="persons.html" class="btn btn-secondary btn-sm">← Back</a>
+        ${canEdit?`<button class="btn btn-danger btn-sm" onclick="deletePoi()" style="margin-top:auto">Delete</button>`:''}
+      </div>
+    </div>
+  </div>
+
+  <div id="tabContainer">
+    <div class="tabs">
+      <button class="tab-btn active" data-target="tOverview">Overview</button>
+      <button class="tab-btn" data-target="tGIS">
+        GIS Map${hasCoords.length?` <span class="nav-badge">${hasCoords.length}</span>`:''}
+      </button>
+      <button class="tab-btn" data-target="tTimeline">Timeline <span class="nav-badge">${activities.length}</span></button>
+      <button class="tab-btn" data-target="tConnections">Connections <span class="nav-badge">${contacts.length}</span></button>
+      <button class="tab-btn" data-target="tNotes">Notes</button>
+      <button class="tab-btn" data-target="tIntel">Intelligence Data</button>
+      <button class="tab-btn" data-target="tMedia">Media &amp; Locations</button>
+    </div>
+
+    ${activities.length > 1 ? `
+    <div class="card mb-16">
+      <div class="card-header"><span class="card-title">Filter by Date Range</span></div>
+      <div id="dateSliderArea"></div>
+    </div>` : ''}
+
+    <!-- OVERVIEW -->
+    <div id="tOverview" class="tab-panel active">
+      <div class="card mb-16">
+        <div class="card-header">
+          <span class="card-title">Intelligence Assessment
+            <span class="badge badge-blue" style="font-size:9px;vertical-align:middle">AI</span></span>
+        </div>
+        <div id="summaryPanel"></div>
+      </div>
+      <div class="grid-2" style="gap:16px">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Profile Details</span></div>
+          <table class="data-table">
+            ${[['ID',poi.id],['Alias',poi.alias],['Full Name',`${poi.first_name||''} ${poi.last_name||''}`.trim()||'—'],
+               ['Date of Birth',formatDate(poi.dob)||'—'],['Nationality',poi.nationality||'—'],
+               ['Risk Level',poi.risk_level],['Status',poi.status],
+               ['Last Seen',formatDate(poi.last_seen)||'—'],['Last Location',poi.last_location||'—'],
+               ['Affiliations',affGrps.map(g=>g.name).join(', ')||'None'],
+               ['Record Updated',formatDate(poi.updated_at)]
+              ].map(([l,v])=>`<tr><td class="text-dim mono" style="width:42%;font-size:11px">${l}</td><td style="font-size:12px">${escHtml(String(v))}</td></tr>`).join('')}
+          </table>
+        </div>
+        <div>
+          <div class="card mb-16">
+            <div class="card-header"><span class="card-title">Description</span></div>
+            <div style="font-size:13px;color:var(--text);line-height:1.75;white-space:pre-wrap">${escHtml(poi.description)||'<span class="text-dim">No description.</span>'}</div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span class="card-title">Operational Notes</span></div>
+            <div style="font-size:12px;color:var(--text-dim);line-height:1.7;font-family:'JetBrains Mono',monospace;white-space:pre-wrap">${escHtml(poi.notes)||'No notes.'}</div>
+          </div>
+        </div>
+      </div>
+      ${poi.likeness?`<div class="card mt-16"><div class="card-header"><span class="card-title">Likeness / Sketch</span></div>
+        <img src="${poi.likeness}" alt="Likeness" style="max-width:200px;border:1px solid var(--border)"/></div>`:''}
+      ${activities.length?`<div class="card mt-16"><div class="card-header"><span class="card-title">Recent Activities</span>
+        <button class="btn btn-secondary btn-sm" onclick="document.querySelector('[data-target=tTimeline]').click()">All ${activities.length} →</button></div>
+        <div id="overviewTimelinePreview">${SUI.timeline(activities.slice(0,3),{linkItems:true})}</div></div>`:''}
+    </div>
+
+    <!-- GIS MAP -->
+    <div id="tGIS" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Activity Locations — ${escHtml(poi.alias)}</span>
+          <div class="flex flex-gap-8">
+            <select class="form-select" id="mapSevF" style="width:140px;font-size:11px" onchange="refreshMap()">
+              <option value="">All Severities</option>
+              <option>CRITICAL</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option>
+            </select>
+            <select class="form-select" id="mapTypeF" style="width:140px;font-size:11px" onchange="refreshMap()">
+              <option value="">All Types</option>
+              <option>MEETING</option><option>MOVEMENT</option><option>COMMUNICATION</option>
+              <option>FINANCIAL</option><option>SURVEILLANCE</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="fitMap()">⊕ Fit</button>
+          </div>
+        </div>
+        ${hasCoords.length===0 && !(poi.locations||[]).length
+          ? `<div style="padding:40px;text-align:center;color:var(--text-dim);font-family:'JetBrains Mono',monospace;font-size:12px">
+               No geo-tagged activities or known locations. Log activities with coordinates, or add a known location below, to visualise them here.</div>`
+          : `<div style="position:relative">
+               <div id="personMap" class="detail-map"></div>
+               <div class="map-legend-panel">
+                 <div style="color:var(--text-hi);margin-bottom:6px;font-size:10px">SEVERITY</div>
+                 ${[['CRITICAL','#e84a4a'],['HIGH','#e88a4a'],['MEDIUM','#e8c44a'],['LOW','#4ae87a']].map(([s,c])=>
+                   `<div class="map-legend-row"><div class="map-legend-dot" style="background:${c}"></div>${s}</div>`).join('')}
+                 ${(poi.locations||[]).length?`<div style="color:var(--text-hi);margin:8px 0 4px;font-size:10px">OTHER</div>
+                   <div class="map-legend-row"><div class="map-legend-dot" style="background:#c44ae8"></div>Known location</div>`:''}
+               </div>
+               <div class="map-stat-overlay">
+                 <div class="map-stat-chip" id="mapCountChip">${hasCoords.length} activity locations</div>
+                 ${(poi.locations||[]).length?`<div class="map-stat-chip">${poi.locations.length} known location(s)</div>`:''}
+               </div>
+             </div>
+             <div id="mapInfo" style="padding:12px;border-top:1px solid var(--border);min-height:50px">
+               <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)">Hover a marker for info · Click to pin · Double-click to open activity record.</span>
+             </div>`}
+      </div>
+    </div>
+
+    <!-- TIMELINE -->
+    <div id="tTimeline" class="tab-panel">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Full Activity Timeline</span>
+          ${canEdit?`<button class="btn btn-primary btn-sm" onclick="openActivityModal()">+ Log</button>`:''}
+        </div>
+        <div id="timelineWrap">${SUI.timeline(activities,{linkItems:true})}</div>
+      </div>
+    </div>
+
+    <!-- CONNECTIONS -->
+    <div id="tConnections" class="tab-panel">
+      <div class="grid-2" style="gap:16px">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Known Associates (${contacts.length})</span></div>
+          <div id="contactsGrid" style="display:flex;flex-direction:column;gap:8px">
+            ${contacts.length
+              ? contacts.map(cid=>`<div id="con_${cid}" class="connection-card" onclick="location.href='person.html?id=${cid}'" style="cursor:pointer">
+                  <div class="connection-avatar">${iUsers}</div>
+                  <div class="connection-body"><div class="connection-alias">Loading…</div>
+                    <div class="connection-name">${escHtml(cid)}</div></div></div>`).join('')
+              : '<div style="color:var(--text-dim);font-size:12px">No associates recorded.</div>'}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Group Affiliations</span></div>
+          ${affGrps.length
+            ? affGrps.map(g=>`<a href="group.html?id=${g.id}" class="connection-card" style="display:flex;margin-bottom:8px">
+                <div class="connection-avatar" style="background:rgba(74,143,232,.1)">${iGroup}</div>
+                <div class="connection-body">
+                  <div class="connection-alias">${escHtml(g.id)} · ${escHtml(g.type)}</div>
+                  <div class="connection-name">${escHtml(g.name)}</div>
+                  <div class="connection-meta">${threatBadge(g.threat_level)} ${statusBadge(g.status)}</div>
+                </div></a>`).join('')
+            : '<div style="color:var(--text-dim);font-size:12px">No affiliations.</div>'}
+        </div>
+      </div>
+      <div class="card mt-16">
+        <div class="card-header"><span class="card-title">Connection Network Graph</span></div>
+        <div class="graph-wrap" style="height:320px">
+          <canvas id="networkCanvas" style="width:100%;height:100%"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- NOTES -->
+    <div id="tNotes" class="tab-panel">
+      <div class="card"><div class="card-header"><span class="card-title">Intelligence Notes</span></div>
+        <div id="notesPanel"></div></div>
+    </div>
+
+    <!-- INTEL DATA -->
+    <div id="tIntel" class="tab-panel">
+      <div class="grid-2" style="gap:16px">
+        <div class="card"><div class="card-header"><span class="card-title">Custom Intelligence Fields</span></div>
+          <div id="fieldsPanel"></div></div>
+        <div class="card"><div class="card-header"><span class="card-title">Attachments &amp; Documents</span></div>
+          <div id="attachPanel"></div></div>
+      </div>
+    </div>
+
+    <!-- MEDIA & LOCATIONS -->
+    <div id="tMedia" class="tab-panel">
+      <div class="card mb-16">
+        <div class="card-header"><span class="card-title">Profile Photographs</span></div>
+        <div id="profileImagesPanel"></div>
+      </div>
+
+      <div class="card mb-16">
+        <div class="card-header"><span class="card-title">Known Locations</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">e.g. residences, sighting points, safehouses</span>
+        </div>
+        <div id="locationsPanel"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Activity Evidence Photos</span>
+          ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="document.getElementById('galleryFile').click()">📷 Upload</button>
+            <input type="file" id="galleryFile" accept="image/*" multiple class="hidden" onchange="uploadGallery(this)"/>`:''}
+        </div>
+        <div id="galleryGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:8px">
+          ${renderGallery()}
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  initTabs('tabContainer');
+  SUI.summary('summaryPanel','person',id,canEdit);
+  SUI.tags('tagsArea','person',id,canEdit);
+  SUI.notes('notesPanel','person',id,canEdit);
+  SUI.fields('fieldsPanel','person',id,canEdit);
+  SUI.attachments('attachPanel','person',id,canEdit);
+  SUI.images('profileImagesPanel','person',id,canEdit);
+  SUI.locations('locationsPanel','person',id,canEdit);
+  drawNetwork();
+  loadContactDetails();
+  initDateSlider();
+  document.querySelectorAll('[data-target="tGIS"]').forEach(b=>b.addEventListener('click',()=>setTimeout(initPersonMap,150)));
+}
+
+/* ── DATE SLIDER ──────────────────────────────────────────── */
+function initDateSlider() {
+  const area = document.getElementById('dateSliderArea');
+  if (!area) return;
+  SUI.dateSlider(area, activities, {
+    onChange: (from, to, filtered) => {
+      // Re-render timeline tab with filtered activities
+      const tl = document.getElementById('timelineWrap');
+      if (tl) tl.innerHTML = SUI.timeline(filtered, {linkItems:true});
+      const preview = document.getElementById('overviewTimelinePreview');
+      if (preview) preview.innerHTML = SUI.timeline(filtered.slice(0,3), {linkItems:true});
+      // Re-render map with only the filtered activities in range
+      filteredActivities = filtered;
+      if (personMapObj) renderPersonMarkers();
+      const chip = document.getElementById('mapCountChip');
+      if (chip) chip.textContent = `${filtered.filter(a=>a.lat&&a.lng).length} activity locations`;
+    }
+  });
+}
+
+/* ── MAP ── */
+function initPersonMap() {
+  const el = document.getElementById('personMap');
+  if (!el) return;
+  if (personMapObj) { personMapObj.resize(); return; }
+  const pts = activities.filter(a=>a.lat&&a.lng);
+  const knownLocs = poi.locations||[];
+  if (!pts.length && !knownLocs.length) return;
+  const center = pts.length ? [pts[0].lat,pts[0].lng] : [knownLocs[0].lat,knownLocs[0].lng];
+  personMapObj = MAP.create('personMap', {center, zoom:6, scrollZoom:false});
+  personMapObj.on('load', () => {
+    renderPersonMarkers();
+    const allPts = [...pts.map(a=>[a.lat,a.lng]), ...knownLocs.map(l=>[l.lat,l.lng])];
+    if (allPts.length>1) MAP.fitToPoints(personMapObj, allPts, 30);
+  });
+}
+
+function renderPersonMarkers() {
+  personMarkers.forEach(m=>m.remove()); personMarkers=[];
+  const sf = document.getElementById('mapSevF')?.value||'';
+  const tf = document.getElementById('mapTypeF')?.value||'';
+  filteredActivities.filter(a=>a.lat&&a.lng&&(!sf||a.severity===sf)&&(!tf||a.type===tf)).forEach(a=>{
+    const col=SEV_COL[a.severity]||'#4a8fe8';
+    const m=MAP.circleMarker(personMapObj, a.lat, a.lng, {radius:a.severity==='CRITICAL'?11:8, color:col, weight:2});
+    const popup=`
+      <div class="lp-title">${escHtml(a.type)}</div>
+      <div class="lp-row"><span class="lp-label">Location</span><span class="lp-val">${escHtml(a.location)}</span></div>
+      <div class="lp-row"><span class="lp-label">Date</span><span class="lp-val">${formatDate(a.date)}</span></div>
+      <div class="lp-row"><span class="lp-label">Reported</span><span class="lp-val">${escHtml(a.reported_by||'Unknown')}</span></div>
+      <div class="lp-row"><span class="lp-label">Coords</span><span class="lp-val">${a.lat.toFixed(4)}, ${a.lng.toFixed(4)}</span></div>
+      <span class="lp-sev lp-sev-${a.severity.toLowerCase()}">${a.severity}</span>
+      <div style="font-size:11px;color:var(--text);margin-top:6px;border-top:1px solid var(--border);padding-top:6px">${escHtml(a.description.slice(0,120))}${a.description.length>120?'…':''}</div>
+      <a href="activity.html?id=${a.id}" class="lp-link hs-popup-link">View full activity →</a>`;
+    MAP.bindHoverPopup(m, popup, {maxWidth:'280px', onDblClick:()=>{location.href=`activity.html?id=${a.id}`;}});
+    m.getElement().addEventListener('click',()=>{
+      const p=document.getElementById('mapInfo');
+      if(p) p.innerHTML=`<div class="flex flex-gap-8" style="flex-wrap:wrap;margin-bottom:6px">${sevBadge(a.severity)}<span class="badge badge-grey">${escHtml(a.type)}</span></div>
+        <div style="font-size:13px;color:var(--text-hi);margin-bottom:4px">${escHtml(a.location)}</div>
+        <div style="font-size:12px;color:var(--text);margin-bottom:4px">${escHtml(a.description)}</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)">${formatDate(a.date)} · by ${escHtml(a.reported_by||'?')}
+          · <a href="activity.html?id=${a.id}" style="color:var(--accent2)">Open record →</a></div>`;
+    });
+    personMarkers.push(m);
+  });
+
+  // Known locations (purple markers) — not date-filtered, these are standing facts
+  (poi.locations||[]).forEach(l=>{
+    const html = `<div style="width:16px;height:16px;background:#c44ae8;border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px #c44ae8aa"></div>`;
+    const m = MAP.htmlMarker(personMapObj, l.lat, l.lng, html);
+    const popup = `
+      <div class="lp-title">📍 ${escHtml(l.label||'Known location')}</div>
+      <div class="lp-row"><span class="lp-label">Coords</span><span class="lp-val">${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}</span></div>
+      ${l.date_observed?`<div class="lp-row"><span class="lp-label">Observed</span><span class="lp-val">${formatDate(l.date_observed)}</span></div>`:''}
+      ${l.note?`<div style="font-size:11px;color:var(--text);margin-top:6px;border-top:1px solid var(--border);padding-top:6px">${escHtml(l.note)}</div>`:''}`;
+    MAP.bindHoverPopup(m, popup, {maxWidth:'260px'});
+    personMarkers.push(m);
+  });
+}
+function refreshMap(){renderPersonMarkers();}
+function fitMap(){const c=[...filteredActivities.filter(a=>a.lat&&a.lng).map(a=>[a.lat,a.lng]),...(poi.locations||[]).map(l=>[l.lat,l.lng])];if(c.length&&personMapObj)MAP.fitToPoints(personMapObj, c, 30);}
+
+/* ── NETWORK ── */
+function drawNetwork(){
+  const canvas=document.getElementById('networkCanvas'); if(!canvas) return;
+  const c=canvas.parentElement;
+  canvas.width=c.clientWidth; canvas.height=c.clientHeight||320;
+  SUI.networkGraph('networkCanvas',
+    {alias:poi.alias,risk_level:poi.risk_level},
+    (poi.contacts||[]).map(cid=>({alias:cid,risk_level:'MEDIUM',id:cid})));
+}
+
+async function loadContactDetails(){
+  for(const cid of (poi.contacts||[])){
+    try{
+      const c=await API.person(cid);
+      const el=document.getElementById(`con_${cid}`);
+      if(el) el.innerHTML=`
+        <div class="connection-avatar">${c.photo?`<img src="${c.photo}"/>`:`${iUsers}`}</div>
+        <div class="connection-body">
+          <div class="connection-alias">${escHtml(c.id)} · ${escHtml(c.risk_level)}</div>
+          <div class="connection-name">${escHtml(c.alias)}</div>
+          <div class="connection-meta">${escHtml(c.first_name||'')} ${escHtml(c.last_name||'')} ${riskBadge(c.risk_level)}</div>
+        </div><span style="color:var(--accent2)">→</span>`;
+    }catch{}
+  }
+}
+
+/* ── GALLERY ── */
+function renderGallery(){
+  const g=poi.gallery||[];
+  if(!g.length) return `<div style="grid-column:1/-1;padding:20px;color:var(--text-dim);font-size:12px;font-family:'JetBrains Mono',monospace">No photos uploaded.${canEdit?' Click Upload to add images.':''}</div>`;
+  return g.map(img=>`
+    <div style="background:var(--panel2);border:1px solid var(--border);overflow:hidden;position:relative">
+      <img src="${img.src}" alt="${escHtml(img.caption||'')}" style="width:100%;aspect-ratio:4/3;object-fit:cover;display:block;cursor:pointer" onclick="window.open('${img.src}','_blank')"/>
+      <div style="padding:6px 8px;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim)">${escHtml(img.caption||'No caption')}</div>
+      ${canEdit?`<button onclick="delGallery('${img.id}')" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.75);border:none;color:var(--danger);cursor:pointer;padding:2px 6px;font-size:11px">✕</button>`:''}
+    </div>`).join('');
+}
+async function uploadGallery(input){
+  for(const file of Array.from(input.files)){
+    const src=await fileToB64(file);
+    const cap=prompt(`Caption for "${file.name}" (optional):`,'')||'';
+    await API.addGallery(id,{src,caption:cap,date:today()});
+  }
+  poi=await API.person(id);
+  document.getElementById('galleryGrid').innerHTML=renderGallery();
+  showToast('Photos uploaded','success');
+}
+async function delGallery(gid){
+  if(!confirm('Remove photo?')) return;
+  await API.delGallery(id,gid);
+  poi=await API.person(id);
+  document.getElementById('galleryGrid').innerHTML=renderGallery();
+}
+
+/* ── PHOTO UPLOAD ── */
+async function uploadPhoto(input){
+  const file=input.files[0]; if(!file) return;
+  const src=await fileToB64(file);
+  await API.updatePerson(id,{photo:src});
+  poi.photo=src; showToast('Photo updated','success');
+  const dp=document.querySelector('.detail-photo');
+  if(dp){let img=dp.querySelector('img');
+    if(img){img.src=src;}else{const i=document.createElement('img');i.src=src;i.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:cover';dp.prepend(i);}}
+}
+function uploadLikeness(){const i=document.createElement('input');i.type='file';i.accept='image/*';
+  i.onchange=async e=>{const f=e.target.files[0];if(!f)return;const src=await fileToB64(f);
+    await API.updatePerson(id,{likeness:src});poi.likeness=src;showToast('Likeness updated','success');};i.click();}
+
+/* ── ACTIVITY ── */
+function openActivityModal(){
+  document.getElementById('aDate').value=today();
+  document.getElementById('aGroup').value=(poi.affiliation||[])[0]||'';
+  openModal('actModal');
+}
+async function saveActivity(){
+  const date=document.getElementById('aDate').value,loc=document.getElementById('aLoc').value.trim(),desc=document.getElementById('aDesc').value.trim();
+  if(!date||!loc||!desc){showToast('Date, location and description required','error');return;}
+  try{
+    await API.createActivity({poiId:id,groupId:document.getElementById('aGroup').value.trim()||null,
+      type:document.getElementById('aType').value,date,location:loc,
+      lat:parseFloat(document.getElementById('aLat').value)||0,lng:parseFloat(document.getElementById('aLng').value)||0,
+      description:desc,severity:document.getElementById('aSev').value,reportedBy:document.getElementById('aBy').value.trim()});
+    closeModal('actModal'); showToast('Activity logged','success');
+    activities=await API.personActs(id);
+    filteredActivities=activities;
+    document.getElementById('timelineWrap').innerHTML=SUI.timeline(activities,{linkItems:true});
+    if(personMapObj){personMapObj.remove();personMapObj=null;} setTimeout(initPersonMap,50);
+    initDateSlider();
+  }catch(e){showToast(e.message,'error');}
+}
+
+/* ── EDIT ── */
+function openEditModal(){
+  document.getElementById('editModalBody').innerHTML=`
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Alias *</label><input class="form-input" id="eAlias" value="${escHtml(poi.alias)}"/></div>
+      <div class="form-group"><label class="form-label">Risk Level</label><select class="form-select" id="eRisk">${['LOW','MEDIUM','HIGH','CRITICAL'].map(r=>`<option ${r===poi.risk_level?'selected':''}>${r}</option>`).join('')}</select></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">First Name</label><input class="form-input" id="eFirst" value="${escHtml(poi.first_name||'')}"/></div>
+      <div class="form-group"><label class="form-label">Last Name</label><input class="form-input" id="eLast" value="${escHtml(poi.last_name||'')}"/></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Date of Birth</label><input type="date" class="form-input" id="eDob" value="${poi.dob||''}"/></div>
+      <div class="form-group"><label class="form-label">Nationality</label><input class="form-input" id="eNat" value="${escHtml(poi.nationality||'')}"/></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Status</label><select class="form-select" id="eStat">${['ACTIVE','INACTIVE'].map(s=>`<option ${s===poi.status?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">Last Seen</label><input type="date" class="form-input" id="eLastSeen" value="${poi.last_seen||''}"/></div>
+    </div>
+    <div class="form-group"><label class="form-label">Last Location</label><input class="form-input" id="eLoc" value="${escHtml(poi.last_location||'')}"/></div>
+    <div class="form-group">
+      <label class="form-label">Coordinates <span style="color:var(--text-dim);font-weight:400">(optional — exact lat/lng for Last Location, if known)</span></label>
+      <div class="form-row">
+        <input type="number" step="any" class="form-input" id="eLat" placeholder="Latitude" value="${poi.last_lat??''}"/>
+        <input type="number" step="any" class="form-input" id="eLng" placeholder="Longitude" value="${poi.last_lng??''}"/>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="SUI.pickCoords('eLat','eLng')" style="flex-shrink:0">📍 Pick on Map</button>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">Description</label><textarea class="form-textarea" id="eDesc">${escHtml(poi.description||'')}</textarea></div>
+    <div class="form-group"><label class="form-label">Operational Notes</label><textarea class="form-textarea" id="eNotes" style="min-height:70px">${escHtml(poi.notes||'')}</textarea></div>
+    <div class="form-group"><label class="form-label">Group Affiliations (IDs, comma-separated)</label><input class="form-input" id="eAffil" value="${(poi.affiliation||[]).join(', ')}"/></div>
+    <div class="form-group"><label class="form-label">Contacts (POI IDs, comma-separated)</label><input class="form-input" id="eContacts" value="${(poi.contacts||[]).join(', ')}"/></div>`;
+  openModal('editModal');
+}
+async function saveEdit(){
+  try{
+    await API.updatePerson(id,{alias:document.getElementById('eAlias').value.trim(),
+      riskLevel:document.getElementById('eRisk').value,firstName:document.getElementById('eFirst').value.trim(),
+      lastName:document.getElementById('eLast').value.trim(),dob:document.getElementById('eDob').value,
+      nationality:document.getElementById('eNat').value.trim(),status:document.getElementById('eStat').value,
+      lastSeen:document.getElementById('eLastSeen').value,lastLocation:document.getElementById('eLoc').value.trim(),
+      lastLat:document.getElementById('eLat').value,lastLng:document.getElementById('eLng').value,
+      description:document.getElementById('eDesc').value.trim(),notes:document.getElementById('eNotes').value.trim(),
+      affiliation:document.getElementById('eAffil').value.split(',').map(s=>s.trim()).filter(Boolean),
+      contacts:document.getElementById('eContacts').value.split(',').map(s=>s.trim()).filter(Boolean)});
+    closeModal('editModal'); showToast('Saved','success');
+    [poi,activities]=await Promise.all([API.person(id),API.personActs(id)]);
+    personMapObj=null; renderPage();
+  }catch(e){showToast(e.message,'error');}
+}
+async function deletePoi(){
+  if(!confirm(`Permanently delete POI "${poi.alias}"?`)) return;
+  await API.deletePerson(id); showToast('Deleted','success');
+  setTimeout(()=>{location.href='persons.html';},600);
+}
+
+async function generateReport(){
+  const affGrps=(poi.affiliation||[]).map(gid=>allGroups.find(g=>g.id===gid)).filter(Boolean);
+  const geoActs=activities.filter(a=>a.lat&&a.lng);
+  const knownLocs=poi.locations||[];
+  const profileImages=poi.images||[];
+  const allMapPts=[...geoActs.map(a=>({lat:a.lat,lng:a.lng})),...knownLocs.map(l=>({lat:l.lat,lng:l.lng}))];
+  const mapHtml = await staticMapHtml(allMapPts, {caption:`${geoActs.length} activity location(s) and ${knownLocs.length} known location(s) shown.`});
+  printReport(`POI — ${poi.alias}`,`
+    <div class="rpt-header">
+      ${reportPhotoHtml(poi.photo, 'NO PHOTO ON FILE')}
+      <div style="flex:1">
+        <div class="rpt-class">RESTRICTED</div>
+        <h1>SENTINEL — Person of Interest Report</h1>
+        <p>Generated: ${new Date().toLocaleString()} · Analyst: ${user.name}</p>
+        <h2 style="border:none;margin:10px 0 0;padding:0">${escHtml(poi.alias)} — ${escHtml(poi.first_name||'')} ${escHtml(poi.last_name||'')}</h2>
+        <div style="margin-top:6px">
+          <span class="badge ${poi.risk_level==='CRITICAL'||poi.risk_level==='HIGH'?'badge-red':poi.risk_level==='MEDIUM'?'badge-amber':'badge-green'}">${escHtml(poi.risk_level||'')}</span>
+          <span class="badge ${poi.status==='ACTIVE'?'badge-green':'badge-grey'}">${escHtml(poi.status||'')}</span>
+          ${affGrps.map(g=>`<span class="badge badge-blue">${escHtml(g.name)}</span>`).join('')}
+        </div>
+      </div>
+    </div>
+    ${SUI.summaryText('person',poi.id)?`<h2>Intelligence Assessment</h2>${SUI.mdToHtml(SUI.summaryText('person',poi.id))}`:''}
+    <table>${[['ID',poi.id],['Alias',poi.alias],['Nationality',poi.nationality],['DOB',formatDate(poi.dob)],
+      ['Risk',poi.risk_level],['Status',poi.status],['Last Seen',formatDate(poi.last_seen)],
+      ['Last Location',poi.last_location],['Affiliations',affGrps.map(g=>g.name).join(', ')||'None']
+    ].map(([l,v])=>`<tr><td>${l}</td><td>${escHtml(String(v||'—'))}</td></tr>`).join('')}</table>
+    <h2>Description</h2><p>${escHtml(poi.description||'')}</p>
+    <h2>Operational Notes</h2><pre>${escHtml(poi.notes||'')}</pre>
+    <h2>Photographs &amp; Likeness</h2>
+    ${reportGalleryHtml([
+      ...(poi.likeness?[{src:poi.likeness,caption:'Likeness / Sketch'}]:[]),
+      ...profileImages.map(im=>({src:im.content,caption:im.description||im.name})),
+      ...(poi.gallery||[]).map(g=>({src:g.src,caption:g.caption||formatDate(g.date_taken)}))
+    ], {emptyText:'No photographs or likeness on file for this person.'})}
+    <h2>GIS — Activity &amp; Known Locations</h2>
+    ${mapHtml}
+    ${knownLocs.length?`<table><tr><th>Label</th><th>Coordinates</th><th>Date Observed</th><th>Note</th></tr>
+      ${knownLocs.map(l=>`<tr><td>${escHtml(l.label||'—')}</td><td>${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}</td><td>${formatDate(l.date_observed)}</td><td>${escHtml(l.note||'')}</td></tr>`).join('')}</table>`:''}
+    <h2>Activity Timeline (${activities.length})</h2>
+    <table><tr><th>Date</th><th>Type</th><th>Location</th><th>Severity</th><th>Description</th></tr>
+    ${activities.sort((a,b)=>b.date.localeCompare(a.date)).map(a=>`<tr><td>${formatDate(a.date)}</td><td>${a.type}</td><td>${escHtml(a.location)}</td><td>${a.severity}</td><td>${escHtml(a.description)}</td></tr>`).join('')}</table>`);
+}
+</script>
+</body>
+</html>
