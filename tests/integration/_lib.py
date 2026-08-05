@@ -6,10 +6,13 @@ occasionally reset a connection under back-to-back requests — retry once or
 twice rather than treat it as a real failure.
 """
 import json
+import os
 import urllib.request
 import urllib.error
 
-BASE = "http://localhost:8090"
+# Overridable so CI (and a second local instance) can target a different
+# port without editing the suite. Defaults to the usual dev port.
+BASE = os.environ.get("SENTINEL_TEST_BASE_URL", "http://localhost:8090").rstrip("/")
 
 
 def call(method, path, token=None, body=None, is_json=True):
