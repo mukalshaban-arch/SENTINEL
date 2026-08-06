@@ -17,22 +17,32 @@ from _lib import server_reachable, BASE  # noqa: E402
 
 import test_auth
 import test_core_entities
+import test_detail_views
+import test_extras
 import test_country_profiles
 import test_link_analysis
 import test_nlp
+import test_summaries_and_nlp_commit
 import test_face_search
 import test_role_enforcement
+import test_admin
+import test_errors_and_search
 import test_maps
 import cleanup
 
 MODULES = [
     ("AUTH", test_auth),
     ("CORE ENTITIES", test_core_entities),
+    ("DETAIL VIEWS", test_detail_views),
+    ("ENTITY EXTRAS", test_extras),
     ("COUNTRY PROFILES", test_country_profiles),
     ("LINK ANALYSIS", test_link_analysis),
     ("NLP / ANALYSIS", test_nlp),
+    ("SUMMARIES & NLP COMMIT", test_summaries_and_nlp_commit),
     ("FACE SEARCH", test_face_search),
     ("ROLE ENFORCEMENT", test_role_enforcement),
+    ("ADMIN", test_admin),
+    ("ERRORS & SEARCH", test_errors_and_search),
     ("MAPS", test_maps),
 ]
 

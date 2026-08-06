@@ -12,3 +12,15 @@ psycopg2-binary>=2.9
 bcrypt>=4.0
 numpy>=1.26
 python-dateutil>=2.9
+
+# spaCy + the small English model (~12MB) are cheap enough for CI and let the
+# NLP extraction tests exercise the real pipeline instead of a stub. The model
+# itself is not a pip name — CI installs it with:
+#   python -m spacy download en_core_web_sm
+# Tests that need it skip cleanly when it is absent (see
+# tests/unit/test_nlp_extract_spacy.py), so this file stays usable without it.
+spacy>=3.8
+# spaCy 3.8's CLI does `from click import NoSuchOption`, but typer >=0.27 no
+# longer pulls click in transitively — so without this, plain `import spacy`
+# raises ModuleNotFoundError and every spaCy-backed test silently skips.
+click>=8.0

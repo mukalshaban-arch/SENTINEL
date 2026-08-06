@@ -7,6 +7,11 @@ def run(ctx):
     if not tok:
         return
 
+    # NOTE: standing Locations (the `locations` table) have no DELETE route.
+    # /api/locations/<id> resolves to the generic extras handler, which maps
+    # "locations" to entity_coordinates — a different table entirely — so
+    # calling it here would delete the wrong row. The ZZTest Location record
+    # is left in place deliberately; CI runs against a fresh database.
     if ctx.get("chart_id"):
         call("DELETE", f"/api/link-charts/{ctx['chart_id']}", tok)
     if ctx.get("intel_id"):

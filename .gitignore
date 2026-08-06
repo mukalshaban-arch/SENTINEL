@@ -16,6 +16,7 @@ venv/
 *.log
 uploads/
 tiles/
+backups/
 
 # ── Test / coverage artifacts ────────────────────────────
 .pytest_cache/

@@ -62,3 +62,63 @@ def test_parse_date_default_fallback_year_not_fabricated():
 
 def test_parse_date_explicit_1900_is_preserved():
     assert ne._parse_date("1 January 1900") == "1900-01-01"
+
+
+# ── Input truncation ─────────────────────────────────────────────────────
+def test_extract_truncates_input_over_200k_chars():
+    """_extract caps input at 200k chars before handing it to spaCy. Verified
+    with a stub pipeline so this stays instant — running 200k characters
+    through the real model takes minutes."""
+    captured = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_nlp(text):
+        captured["len"] = len(text)
+        raise _Stop
+
+    with pytest.raises(_Stop):
+        ne._extract(fake_nlp, "x" * 250_000)
+    assert captured["len"] <= 200_000
+
+
+def test_extract_does_not_truncate_short_input():
+    captured = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_nlp(text):
+        captured["len"] = len(text)
+        raise _Stop
+
+    with pytest.raises(_Stop):
+        ne._extract(fake_nlp, "Peter met John in Nairobi.")
+    assert captured["len"] == len("Peter met John in Nairobi.")
+
+
+def test_extract_entities_swallows_pipeline_errors(monkeypatch):
+    """extract_entities must never raise — a broken pipeline yields an empty
+    result so the calling job is marked 'reviewed', not 'failed'."""
+    def boom(text):
+        raise RuntimeError("pipeline exploded")
+
+    monkeypatch.setattr(ne, "_get_spacy", lambda: boom)
+    result = ne.extract_entities("anything")
+    assert result == {"persons": [], "groups": [], "locations": [],
+                      "activities": [], "image_links": []}
+
+
+def test_extract_entities_returns_empty_when_model_unavailable(monkeypatch):
+    monkeypatch.setattr(ne, "_get_spacy", lambda: None)
+    result = ne.extract_entities("Peter Mwangi met contacts in Nairobi.")
+    assert result == {"persons": [], "groups": [], "locations": [],
+                      "activities": [], "image_links": []}
+
+
+def test_get_spacy_caches_failure(monkeypatch):
+    """A failed model load must be remembered, not retried on every call."""
+    monkeypatch.setattr(ne, "_nlp", None)
+    monkeypatch.setattr(ne, "_load_failed", True)
+    assert ne._get_spacy() is None

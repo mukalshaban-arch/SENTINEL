@@ -162,3 +162,31 @@ def test_is_locked_out_true_when_failures_exceed_threshold(fake_db_cursor):
 def test_is_locked_out_false_when_under_threshold(fake_db_cursor):
     fake_db_cursor.fetchone.return_value = {"cnt": 0}
     assert auth.is_locked_out("someuser", "127.0.0.1") is False
+
+
+# ── Remaining error branches ─────────────────────────────────────────────
+def test_verify_token_rejects_undecodable_payload():
+    """A signature can be valid over a payload that isn't valid JSON — the
+    decode must fail closed rather than raise."""
+    header = auth._b64url(b'{"alg":"HS256","typ":"JWT"}')
+    payload = auth._b64url(b"not-json-at-all")
+    import hmac as _hmac, hashlib as _hashlib
+    sig = auth._b64url(
+        _hmac.new(auth._jwt_secret(), f"{header}.{payload}".encode(), _hashlib.sha256).digest()
+    )
+    assert auth.verify_token(f"{header}.{payload}.{sig}") is None
+
+
+def test_is_locked_out_false_when_ip_query_returns_no_row(fake_db_cursor):
+    """Both the username and the IP check must be consulted; neither
+    returning a row means not locked out."""
+    fake_db_cursor.fetchone.side_effect = [None, None]
+    assert auth.is_locked_out("someuser", "127.0.0.1") is False
+
+
+def test_is_locked_out_true_on_ip_even_when_username_is_clean(fake_db_cursor):
+    fake_db_cursor.fetchone.side_effect = [
+        {"cnt": 0},                                # username: clean
+        {"cnt": auth.LOCKOUT_MAX_FAILURES},        # ip: over the threshold
+    ]
+    assert auth.is_locked_out("someuser", "127.0.0.1") is True

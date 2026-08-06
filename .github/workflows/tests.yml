@@ -33,6 +33,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-test.txt
 
+      # ~12MB. Lets the NLP extraction tests run the real pipeline rather than
+      # skipping; without it tests/unit/test_nlp_extract_spacy.py self-skips.
+      - name: Download spaCy model
+        run: python -m spacy download en_core_web_sm
+
       # Source/omit come from .coveragerc so this job and the e2e job measure
       # the same files and Codecov can merge them into a single number.
       - name: Run unit tests with coverage
@@ -121,6 +126,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-test.txt
+
+      # With the model present the NLP pipeline extracts real entities during
+      # the e2e run, so nlp.py's commit path is exercised rather than skipped.
+      - name: Download spaCy model
+        run: python -m spacy download en_core_web_sm
 
       # schema.sql creates the pgcrypto and unaccent extensions, which need
       # superuser — hence connecting as postgres rather than a scoped role.

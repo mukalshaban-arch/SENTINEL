@@ -2039,15 +2039,25 @@ class SentinelHandler(BaseHTTPRequestHandler):
         outfile.parent.mkdir(exist_ok=True)
         env = os.environ.copy()
         env["PGPASSWORD"] = os.environ.get("SENTINEL_DB_PASS", "")
-        result = subprocess.run([
-            "pg_dump",
-            "-h", os.environ.get("SENTINEL_DB_HOST", "localhost"),
-            "-p", os.environ.get("SENTINEL_DB_PORT", "5432"),
-            "-U", os.environ.get("SENTINEL_DB_USER", "sentinel_user"),
-            "-d", os.environ.get("SENTINEL_DB_NAME", "sentinel"),
-            "-F", "c",    # custom compressed format
-            "-f", str(outfile),
-        ], capture_output=True, env=env, timeout=120)
+        try:
+            result = subprocess.run([
+                "pg_dump",
+                "-h", os.environ.get("SENTINEL_DB_HOST", "localhost"),
+                "-p", os.environ.get("SENTINEL_DB_PORT", "5432"),
+                "-U", os.environ.get("SENTINEL_DB_USER", "sentinel_user"),
+                "-d", os.environ.get("SENTINEL_DB_NAME", "sentinel"),
+                "-F", "c",    # custom compressed format
+                "-f", str(outfile),
+            ], capture_output=True, env=env, timeout=120)
+        except FileNotFoundError:
+            # pg_dump isn't on PATH — a deployment/packaging problem, not a
+            # database error. Say so plainly instead of surfacing an opaque 500.
+            logger.error("pg_dump not found on PATH — cannot create backups.")
+            return self._error(503, "pg_dump is not installed or not on PATH on the server. "
+                                    "Install the PostgreSQL client tools to enable backups.")
+        except subprocess.TimeoutExpired:
+            logger.error("pg_dump timed out after 120s.")
+            return self._error(504, "Backup timed out after 120 seconds.")
 
         verified, counts, detail = result.returncode == 0 and outfile.exists(), None, None
         if verified:
