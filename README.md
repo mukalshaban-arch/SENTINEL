@@ -4,8 +4,6 @@
 [![codecov](https://codecov.io/gh/mukalshaban-arch/SENTINEL/branch/master/graph/badge.svg)](https://codecov.io/gh/mukalshaban-arch/SENTINEL)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Brief description of what your project does.
-
 **An offline-first intelligence tracking and link-analysis dashboard.**
 
 SENTINEL lets a small analyst team track Persons of Interest, Groups of
